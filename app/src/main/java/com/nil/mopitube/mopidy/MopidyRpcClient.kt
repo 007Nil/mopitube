@@ -2,11 +2,13 @@ package com.nil.mopitube.mopidy
 
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull // FIX: Separated import statements and removed duplicates
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.*
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 class MopidyRpcClient(
@@ -14,7 +16,8 @@ class MopidyRpcClient(
     private val scope: CoroutineScope
 ) {
     private val idCounter = AtomicInteger(0)
-    private val pendingRequests = mutableMapOf<Int, (JsonElement?) -> Unit>()
+    // thread-safe map for pending requests
+    private val pendingRequests = ConcurrentHashMap<Int, CompletableDeferred<JsonElement?>>()
 
     init {
         scope.launch {
@@ -23,8 +26,8 @@ class MopidyRpcClient(
                     val json = Json.parseToJsonElement(message).jsonObject
                     val id = json["id"]?.jsonPrimitive?.intOrNull
                     if (id != null) {
-                        val callback = pendingRequests.remove(id)
-                        callback?.invoke(json["result"])
+                        val deferred = pendingRequests.remove(id)
+                        deferred?.complete(json["result"])
                     }
                 } catch (e: Exception) {
                     Log.e("MopidyRpcClient", "Failed to parse message: $message", e)
@@ -44,22 +47,30 @@ class MopidyRpcClient(
             }
         }
 
-        val response = withTimeoutOrNull(5000L) { // 5 second timeout
-            val responseFlow = MutableSharedFlow<JsonElement?>()
-            pendingRequests[id] = { result ->
-                scope.launch {
-                    responseFlow.emit(result)
-                }
-            }
-            ws.send(request.toString())
-            responseFlow.first()
+        // Wait for the websocket to be connected up to the same timeout
+        val becameConnected = withTimeoutOrNull(5000L) {
+            ws.connectionState.first { it is ConnectionState.Connected }
         }
 
-        if (response == null) {
+        if (becameConnected == null) {
+            Log.w("MopidyRpcClient", "Request '$method' (id=$id) aborted: WebSocket not connected within timeout.")
+            return null
+        }
+
+        val deferred = CompletableDeferred<JsonElement?>()
+        pendingRequests[id] = deferred
+
+        ws.send(request.toString())
+
+        val result = withTimeoutOrNull(5000L) {
+            deferred.await()
+        }
+
+        if (result == null) {
             Log.w("MopidyRpcClient", "Request '$method' (id=$id) timed out.")
             pendingRequests.remove(id)
         }
 
-        return response
+        return result
     }
 }

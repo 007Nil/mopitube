@@ -12,12 +12,12 @@ plugins {
 
 android {
     namespace = "com.nil.mopitube"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.nil.mopitube"
         minSdk = 26
-        targetSdk = 34
+        targetSdk = 36
         versionCode = 1
         versionName = "1.0"
     }
@@ -56,6 +56,7 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation(libs.common)
+    implementation(libs.androidx.lifecycle.process)
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     // Material3
@@ -91,4 +92,8 @@ dependencies {
     implementation("androidx.room:room-runtime:$room_version")
     implementation("androidx.room:room-ktx:$room_version") // For coroutine support
     kapt("androidx.room:room-compiler:$room_version")      // <-- THIS LINE IS NOW CORRECT
+
+    // Lifecycle (Process lifecycle owner and runtime)
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
+    implementation("androidx.lifecycle:lifecycle-process:2.6.2")
 }

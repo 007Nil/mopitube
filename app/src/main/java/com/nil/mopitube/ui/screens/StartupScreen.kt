@@ -44,9 +44,6 @@ fun StartupScreen(client: MopidyClient) {
                 }
             }
             is ConnectionState.Connected -> {
-                // State: Success!
-                // AppNav will handle navigating away automatically.
-                // We can show a temporary success message.
                 Text("Connected!")
             }
             is ConnectionState.Disconnected -> {

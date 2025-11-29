@@ -1,5 +1,6 @@
 package com.nil.mopitube.ui.screens
 
+import android.util.Log
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -10,12 +11,17 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material3.*
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.*
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.colorspace.connect
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.nil.mopitube.mopidy.MopidyRepository
 import com.nil.mopitube.ui.components.AlbumItem
 import com.nil.mopitube.ui.components.PlaylistItem
@@ -60,6 +66,8 @@ fun HomeScreen(
             val userPlaylists = playlistsJob.await()
             val recentAlbums = albumsJob.await()
 
+            Log.d("HomeScreen", "Quick Picks: $quickPicks")
+
             val homeShelves = mutableListOf<HomeShelf>()
             if (quickPicks.isNotEmpty()) { homeShelves.add(HomeShelf.QuickPicksShelf("Quick Picks", quickPicks)) }
             if (mostPlayed.isNotEmpty()) { homeShelves.add(HomeShelf.MostPlayedShelf("Most Played", mostPlayed)) }
@@ -72,6 +80,7 @@ fun HomeScreen(
 
     if (isLoading) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Log.d("HomeScreen", "Loading...")
             CircularProgressIndicator()
         }
     } else {

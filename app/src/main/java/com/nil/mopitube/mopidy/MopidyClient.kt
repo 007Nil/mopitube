@@ -1,6 +1,7 @@
 package com.nil.mopitube.mopidy
 
 import android.content.Context
+import android.util.Log
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.StateFlow
 import okhttp3.HttpUrl
@@ -33,12 +34,24 @@ class MopidyClient(context: Context) {
 
     val connectionState: StateFlow<ConnectionState> = ws.connectionState
 
+    init {
+        // Start the connection process as soon as the client is created.
+        start()
+    }
+
     fun start() {
+        Log.d("MopidyClient", "start() called. Initiating connection.")
         ws.connect()
     }
 
     fun retryConnection() {
         start()
+    }
+
+    fun shutdown() {
+        Log.d("MopidyClient", "Shutting down WebSocket and OkHttpClient.")
+        ws.disconnect()
+        scope.cancel()
     }
 
 
