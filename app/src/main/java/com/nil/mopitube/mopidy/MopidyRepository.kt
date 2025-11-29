@@ -2,10 +2,13 @@ package com.nil.mopitube.mopidy
 
 import android.content.Context
 import android.util.Log
+import androidx.compose.foundation.layout.size
+import androidx.room.Query
 import com.nil.mopitube.database.ArtworkCacheEntry
 import com.nil.mopitube.database.LikedTrack
 import com.nil.mopitube.database.MopitubeDatabase // Import the CORRECT database
 import com.nil.mopitube.database.PlayHistoryEntry
+import com.nil.mopitube.database.Track
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
@@ -42,6 +45,125 @@ class MopidyRepository(
         val params = buildJsonObject { put("time_position", JsonPrimitive(ms)) }
         rpc.call("core.playback.seek", params)
     }
+
+    suspend fun getAllTracks(): List<JsonObject> {
+        // Step 1: Attempt to get all tracks from the local database first.
+        var cachedTracks = dao.getAllCachedTracks()
+
+        // Step 2: If the cache is empty, fetch from the server and populate it.
+        if (cachedTracks.isEmpty()) {
+            Log.d("MopidyRepository", "Track cache is empty. Fetching from server...")
+            cacheAllTracksFromServer()
+            // After caching, query the database again.
+            cachedTracks = dao.getAllCachedTracks()
+        } else {
+            Log.d("MopidyRepository", "Loaded ${cachedTracks.size} tracks from local cache.")
+        }
+
+        // Step 3: Convert the Track entities back to JsonObjects for the rest of the app.
+        // This ensures that other functions that depend on this method's return type don't break.
+        return cachedTracks.map { track ->
+            buildJsonObject {
+                put("uri", JsonPrimitive(track.uri))
+                put("name", JsonPrimitive(track.name))
+                put("length", track.length?.let { JsonPrimitive(it) } ?: JsonNull)
+                // Reconstruct album and artist objects
+                track.artistName?.let {
+                    put("artists", buildJsonArray {
+                        add(buildJsonObject {
+                            put("name", JsonPrimitive(it))
+                            // Note: Artist URI is not cached, so it's absent here.
+                        })
+                    })
+                }
+                track.albumName?.let {
+                    put("album", buildJsonObject {
+                        put("name", JsonPrimitive(it))
+                        put("uri", track.albumUri?.let { uri -> JsonPrimitive(uri) } ?: JsonNull)
+                    })
+                }
+            }
+        }
+    }
+
+    suspend fun refreshAllTracksFromServer() {
+        Log.d("MopidyRepository", "Refreshing tracks from server. Clearing old cache first.")
+        deleteAllTracks() // Clear the old data
+        cacheAllTracksFromServer() // Fetch and save new data
+        Log.d("MopidyRepository", "Track refresh complete.")
+    }
+
+    @Query("DELETE FROM tracks") // This is the SQL command to delete all rows
+    suspend fun deleteAllTracks() {
+    }
+
+    /**
+     * Fetches all tracks from the Mopidy server, parses them, and saves them
+     * into the local Room database.
+     */
+    suspend fun cacheAllTracksFromServer() {
+        // Step 1: Browse for all track URIs (same as in getAllTracks)
+        val params = buildJsonObject { put("uri", "local:directory?type=track") }
+        val browseResult = rpc.call("core.library.browse", params)
+        if (browseResult == null || browseResult !is JsonArray) return
+
+        val allTrackUris = browseResult.jsonArray
+            .mapNotNull { it.jsonObject?.get("uri")?.jsonPrimitive?.content }
+        if (allTrackUris.isEmpty()) return
+
+        // Step 2: Look up the full details for all track URIs
+        val lookupParams = buildJsonObject { put("uris", buildJsonArray { allTrackUris.forEach { add(it) } }) }
+        val lookupResult = rpc.call("core.library.lookup", lookupParams)
+
+        // Step 3: Parse the JsonObject result into a list of `Track` entities
+        val tracksToCache = lookupResult?.jsonObject?.values
+            ?.flatMap { it.jsonArray }
+            ?.mapNotNull { it.jsonObject }
+            ?.map { trackJson ->
+                // Safely extract each piece of information from the JSON
+                val artistName = trackJson["artists"]?.jsonArray?.firstOrNull()
+                    ?.jsonObject?.get("name")?.jsonPrimitive?.content
+                val albumObject = trackJson["album"]?.jsonObject
+                val albumName = albumObject?.get("name")?.jsonPrimitive?.content
+                val albumUri = albumObject?.get("uri")?.jsonPrimitive?.content
+
+                Track(
+                    uri = trackJson["uri"]?.jsonPrimitive?.content ?: "",
+                    name = trackJson["name"]?.jsonPrimitive?.content ?: "Unknown Track",
+                    artistName = artistName,
+                    albumName = albumName,
+                    albumUri = albumUri,
+                    length = trackJson["length"]?.jsonPrimitive?.intOrNull
+                )
+            }
+            ?.filter { it.uri.isNotBlank() } // Ensure we don't save tracks with an empty URI
+            ?: emptyList()
+
+        // Step 4: Save the parsed tracks to the database
+        if (tracksToCache.isNotEmpty()) {
+            dao.insertAllTracks(tracksToCache)
+            Log.d("MopidyRepository", "Successfully cached ${tracksToCache.size} tracks.")
+        }
+    }
+    suspend fun getAllAlbums(): List<JsonObject> {
+        val allTracks = getAllTracks()
+        if (allTracks.isEmpty()) return emptyList()
+
+        return allTracks
+            .mapNotNull { it["album"]?.jsonObject }
+            .distinctBy { it["uri"]?.jsonPrimitive?.content }
+    }
+
+    suspend fun getAllArtists(): List<JsonObject> {
+        val allTracks = getAllTracks()
+        if (allTracks.isEmpty()) return emptyList()
+
+        return allTracks
+            .flatMap { it["artists"]?.jsonArray ?: emptyList() }
+            .mapNotNull { it.jsonObject }
+            .distinctBy { it["uri"]?.jsonPrimitive?.content }
+    }
+
     suspend fun clearTracklist() { rpc.call("core.tracklist.clear") }
     suspend fun addTrackToTracklist(trackUri: String) {
         val params = buildJsonObject { put("uris", buildJsonArray { add(JsonPrimitive(trackUri)) }) }
@@ -70,7 +192,13 @@ class MopidyRepository(
     }
     suspend fun lookup(uri: String): JsonElement? {
         val params = buildJsonObject { put("uri", uri) }
-        return rpc.call("core.library.lookup", params)
+        return rpc.call("core.library.browse", params)
+    }
+
+    suspend fun getAlbumSongs(uri: String): JsonElement? {
+        val params = buildJsonObject { put("uri", uri) }
+        Log.d("lookup function param", ": $params")
+        return rpc.call("core.library.browse", params)
     }
     suspend fun search(query: Map<String, List<String>>): List<JsonElement> {
         val params = buildJsonObject { put("query", buildJsonObject { query.forEach { (k, v) -> put(k, buildJsonArray { v.forEach { add(it) } }) } }) }

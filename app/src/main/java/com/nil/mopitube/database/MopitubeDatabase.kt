@@ -16,6 +16,7 @@ data class LikedTrack(
     @PrimaryKey val uri: String
 )
 
+
 // ===== NEW: Table 3: Play History =====
 @Entity(tableName = "play_history")
 data class PlayHistoryEntry(
@@ -39,6 +40,13 @@ interface MopitubeDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertArtwork(entry: ArtworkCacheEntry)
+    // ===== NEW: Method to cache tracks =====
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAllTracks(tracks: List<Track>)
+
+    // ===== NEW: Method to retrieve all cached tracks =====
+    @Query("SELECT * FROM tracks")
+    suspend fun getAllCachedTracks(): List<Track>
 
     // --- Liked Track Methods (Unchanged) ---
     @Query("SELECT * FROM liked_tracks WHERE uri = :trackUri LIMIT 1")
@@ -69,7 +77,13 @@ interface MopitubeDao {
 
 // --- Database Definition (Updated) ---
 // Add PlayHistoryEntry to the entities list and increment the version number to 3
-@Database(entities = [ArtworkCacheEntry::class, LikedTrack::class, PlayHistoryEntry::class], version = 3)
+@Database(entities =
+    [
+        ArtworkCacheEntry::class,
+        LikedTrack::class,
+        PlayHistoryEntry::class,
+        Track::class
+    ], version = 4)
 abstract class MopitubeDatabase : RoomDatabase() {
     abstract fun mopitubeDao(): MopitubeDao
 

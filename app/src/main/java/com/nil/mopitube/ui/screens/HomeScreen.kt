@@ -1,7 +1,15 @@
 package com.nil.mopitube.ui.screens
 
 import android.util.Log
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -9,19 +17,28 @@ import androidx.compose.foundation.lazy.grid.LazyHorizontalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material3.*
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.runtime.*
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.colorspace.connect
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
 import com.nil.mopitube.mopidy.MopidyRepository
 import com.nil.mopitube.ui.components.AlbumItem
 import com.nil.mopitube.ui.components.PlaylistItem
@@ -32,7 +49,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-// Your Shelf models are correct
 sealed class HomeShelf(val title: String) {
     data class QuickPicksShelf(val shelfTitle: String, val items: List<JsonObject>) : HomeShelf(shelfTitle)
     data class MostPlayedShelf(val shelfTitle: String, val items: List<JsonObject>) : HomeShelf(shelfTitle)
@@ -48,7 +64,10 @@ fun HomeScreen(
     onAlbumClick: (String) -> Unit,
     onTrackClick: (String) -> Unit,
     onPlayerClick: () -> Unit,
-    onLikedSongsClick: () -> Unit
+    onLikedSongsClick: () -> Unit,
+    onSongsClick: () -> Unit,
+    onAlbumsClick: () -> Unit,
+    onArtistsClick: () -> Unit
 ) {
     var shelves by remember { mutableStateOf<List<HomeShelf>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
@@ -65,8 +84,6 @@ fun HomeScreen(
             val mostPlayed = mostPlayedJob.await()
             val userPlaylists = playlistsJob.await()
             val recentAlbums = albumsJob.await()
-
-            Log.d("HomeScreen", "Quick Picks: $quickPicks")
 
             val homeShelves = mutableListOf<HomeShelf>()
             if (quickPicks.isNotEmpty()) { homeShelves.add(HomeShelf.QuickPicksShelf("Quick Picks", quickPicks)) }
@@ -85,28 +102,63 @@ fun HomeScreen(
         }
     } else {
         Column {
-            Divider()
+            HorizontalDivider()
             if (shelves.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text("Your library is empty. Add some music!")
                 }
             } else {
+                // The main layout is a LazyColumn for vertical scrolling.
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(vertical = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
+                    // Item 1: The horizontally swipeable row of chips.
                     item {
-                        LazyRow(contentPadding = PaddingValues(horizontal = 16.dp)) {
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             item {
                                 AssistChip(
-                                    onClick = { onLikedSongsClick() },
-                                    label = { Text("Liked Songs") },
-                                    leadingIcon = { Icon(Icons.Filled.Favorite, null) }
+                                    onClick = { onSongsClick() },
+                                    label = { Text("Songs") },
+                                    leadingIcon = { Icon(Icons.Default.MusicNote, null) }
+                                )
+                            }
+                            item {
+                                AssistChip(
+                                    onClick = { onAlbumsClick() },
+                                    label = { Text("Albums") },
+                                    leadingIcon = { Icon(Icons.Default.Album, null) }
+                                )
+                            }
+                            item {
+                                AssistChip(
+                                    onClick = { onArtistsClick() },
+                                    label = { Text("Artists") },
+                                    leadingIcon = { Icon(Icons.Default.Person, null) }
+                                )
+                            }
+                            item {
+                                AssistChip(
+                                    onClick = { /* TODO: Handle Genres click */ },
+                                    label = { Text("Genres") },
+                                    leadingIcon = { Icon(Icons.Default.Category, null) }
+                                )
+                            }
+                            item {
+                                AssistChip(
+                                    onClick = { /* TODO: Handle Playlists click */ },
+                                    label = { Text("Playlists") },
+                                    leadingIcon = { Icon(Icons.AutoMirrored.Filled.QueueMusic, null) }
                                 )
                             }
                         }
                     }
+
+                    // Subsequent items: The content shelves.
                     items(shelves) { shelf ->
                         when (shelf) {
                             is HomeShelf.QuickPicksShelf -> QuickPicksShelfView(repo, shelf.title, shelf.items, onTrackClick)
@@ -142,7 +194,6 @@ fun QuickPicksShelfView(repo: MopidyRepository, title: String, tracks: List<Json
     }
 }
 
-// ===== THE FINAL FIX IS HERE =====
 @Composable
 fun TrackShelfView(
     repo: MopidyRepository,
@@ -156,9 +207,6 @@ fun TrackShelfView(
         LazyRow(contentPadding = PaddingValues(horizontal = 8.dp)) {
             items(tracks) { track ->
                 val uri = track["uri"]?.jsonPrimitive?.content
-                // FIX: Use AlbumItem to render the track, as it's designed to show artwork.
-                // We pass the 'track' object to the 'album' parameter. This works because
-                // AlbumItem just needs a 'name' and 'uri' to fetch artwork, which the track object has.
                 AlbumItem(repo = repo, album = track, onClick = { uri?.let { onTrackClick(it) } })
             }
         }

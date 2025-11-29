@@ -148,6 +148,9 @@ fun AppNav() {
                                     currentRoute == "search" -> "Search"
                                     currentRoute == "liked_songs" -> "Liked Songs"
                                     currentRoute == "settings" -> "Settings"
+                                    currentRoute == "songs" -> "Songs"
+                                    currentRoute == "albums" -> "Albums"
+                                    currentRoute == "artists" -> "Artists"
                                     currentRoute?.startsWith("playlist") == true -> "Playlist"
                                     currentRoute?.startsWith("album") == true -> "Album"
                                     else -> ""
@@ -225,7 +228,10 @@ fun AppNav() {
                             onAlbumClick = { uri -> navController.navigate("album/${URLEncoder.encode(uri, "UTF-8")}") },
                             onTrackClick = onTrackClick,
                             onPlayerClick = onPlayerClick,
-                            onLikedSongsClick = { navController.navigate("liked_songs") }
+                            onLikedSongsClick = { navController.navigate("liked_songs") },
+                            onSongsClick = { navController.navigate("songs") },
+                            onAlbumsClick = { navController.navigate("albums") },
+                            onArtistsClick = { navController.navigate("artists") }
                         )
                     }
 
@@ -246,6 +252,27 @@ fun AppNav() {
                     }
 
                     composable("settings") { SettingsScreen() }
+
+                    composable("songs") {
+                        SongsScreen(
+                            repo = nonNullClient.repo,
+                            onTrackClick = onTrackClick
+                        )
+                    }
+
+                    composable("albums") {
+                        AlbumsScreen(
+                            repo = nonNullClient.repo,
+                            onAlbumClick = { uri -> navController.navigate("album/${URLEncoder.encode(uri, "UTF-8")}") }
+                        )
+                    }
+
+                    composable("artists") {
+                        ArtistsScreen(
+                            repo = nonNullClient.repo,
+                            onArtistClick = { uri -> Log.d("AppNav", "Artist clicked: $uri. Navigation not implemented yet.") }
+                        )
+                    }
 
                     composable("playlist/{playlistUri}", arguments = listOf(navArgument("playlistUri") { type = NavType.StringType })) {
                         val uri = it.arguments?.getString("playlistUri")?.let { URLDecoder.decode(it, "UTF-8") }
