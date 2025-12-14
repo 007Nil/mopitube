@@ -1,5 +1,6 @@
 package com.nil.mopitube.ui.components
 
+import android.util.Log
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -25,8 +26,6 @@ import com.nil.mopitube.mopidy.MopidyRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.contentOrNull // <-- ===== THE FIX IS HERE =====
 
@@ -43,7 +42,7 @@ fun TrackGridItem(
     // When the track item appears, launch an effect to find its artwork
     LaunchedEffect(track) {
         withContext(Dispatchers.IO) {
-            artworkUrl = repo.findArtwork(track) // Use the new unified function
+            artworkUrl = repo.findArtwork(track)
         }
     }
 
@@ -64,11 +63,20 @@ fun TrackGridItem(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier.fillMaxSize()
             ) {
+                Log.d("ArtworkDebug", "Artwork URL: $artworkUrl")
                 if (artworkUrl != null) {
                     AsyncImage(
                         model = ImageRequest.Builder(LocalContext.current)
                             .data(artworkUrl)
                             .crossfade(true)
+                            .listener(
+                                onError = { _, err ->
+                                    Log.e("ArtworkLoad", "Failed: $artworkUrl → ${err.throwable}")
+                                },
+                                onSuccess = {_, result ->
+                                    Log.d("ArtworkLoad", "Success: $artworkUrl → $result")
+                                }
+                            )
                             .build(),
                         contentDescription = name,
                         contentScale = ContentScale.Crop,
@@ -78,7 +86,8 @@ fun TrackGridItem(
                     // Fallback icon
                     Icon(
                         imageVector = Icons.Default.MusicNote,
-                        contentDescription = "No Artwork"
+                        contentDescription = "No Artwork",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }

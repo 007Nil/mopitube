@@ -2,8 +2,8 @@ package com.nil.mopitube.ui.screens
 
 import android.annotation.SuppressLint
 import android.util.Log
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -28,9 +28,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+//import androidx.preference.isNotEmpty
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
-import com.nil.mopitube.R
 import com.nil.mopitube.mopidy.MopidyClient
 import com.nil.mopitube.mopidy.MopidyRepository
 import kotlinx.coroutines.Dispatchers
@@ -46,9 +46,18 @@ fun PlayerScreen(
     client: MopidyClient,
     onBack: () -> Unit
 ) {
+
     val repo = client.repo
+    if (repo == null) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text("Error: Not connected")
+        }
+        // Early return to prevent the rest of the composable from running with a null repo.
+        return
+    }
     val queueManager = client.queueManager
     val scope = rememberCoroutineScope()
+    val queue by queueManager.queue.collectAsState()
 
     var currentTrack by remember { mutableStateOf<JsonObject?>(null) }
     var artworkUrl by remember { mutableStateOf<String?>(null) }
@@ -70,10 +79,8 @@ fun PlayerScreen(
     val sheetState = rememberModalBottomSheetState()
     var showBottomSheet by remember { mutableStateOf(false) }
 
-    val queue by queueManager.queue.collectAsState()
-
     // This polling loop fetches track state and time
-    LaunchedEffect(Unit) {
+    LaunchedEffect(repo) {
         // Fetch initial volume
         withContext(Dispatchers.IO) {
             repo.getVolume()?.let {
@@ -98,8 +105,44 @@ fun PlayerScreen(
         }
     }
 
+    LaunchedEffect(queue, repo) {
+        // Check if the queue from the queueManager is empty and the repo is available.
+        if (queue.isEmpty() && repo != null) {
+            scope.launch {
+                // Fetch 20 random songs from the library.
+                val randomSongs = repo.getRandomTracks(20)
+                if (randomSongs.isNotEmpty()) {
+                    repo.playTracks(randomSongs)
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(currentTrack, queue) {
+        val track = currentTrack ?: return@LaunchedEffect
+        val currentUri = track["uri"]?.jsonPrimitive?.contentOrNull ?: return@LaunchedEffect
+
+        val currentIndex = queue.indexOfFirst {
+            it["uri"]?.jsonPrimitive?.contentOrNull == currentUri
+        }
+
+        if (currentIndex == -1) return@LaunchedEffect
+
+        val remaining = queue.size - currentIndex - 1
+
+        if (remaining <= 20) {
+            Log.d("PlayerScreen", "Queue low ($remaining remaining). Appending more tracks")
+
+            scope.launch(Dispatchers.IO) {
+                repo.appendRandomTracksIfNeeded(fetchCount = 20)
+
+            }
+        }
+    }
+
     // This effect fetches artwork and like status when the track changes
-    LaunchedEffect(currentTrack) {
+    // This effect fetches artwork and like status when the track changes
+    LaunchedEffect(currentTrack, repo) {
         artworkUrl = null
         isLiked = false
         val track = currentTrack ?: return@LaunchedEffect
@@ -109,17 +152,6 @@ fun PlayerScreen(
             withContext(Dispatchers.IO) {
                 artworkUrl = repo.findArtwork(track)
             }
-        }
-    }
-
-    // Refreshes the queue when playback starts or the track changes
-    LaunchedEffect(isPlaying, currentTrack) {
-        if (isPlaying) {
-            val mopidyTracklist = withContext(Dispatchers.IO) {
-                val result = repo.rpc.call("core.tracklist.get_tl_tracks")
-                result?.jsonArray?.mapNotNull { it.jsonObject["track"]?.jsonObject } ?: emptyList()
-            }
-            queueManager.setQueue(mopidyTracklist, currentTrack?.get("uri")?.jsonPrimitive?.contentOrNull)
         }
     }
 
@@ -263,8 +295,6 @@ fun PlayerScreen(
                     )
                 }
             }
-
-            // Button to trigger the bottom sheet
             Button(onClick = { showBottomSheet = true }) {
                 Icon(Icons.Outlined.PlaylistPlay, contentDescription = "Up Next", modifier = Modifier.padding(end = 8.dp))
                 Text("Up Next")
@@ -297,10 +327,10 @@ fun PlayerScreen(
                         currentTrack = currentTrack,
                         onTrackClick = { clickedUri ->
                             scope.launch {
-                                repo.playTracks(queue, clickedUri)
+                                repo.playTrackFromTracklist(clickedUri)
                                 // Optionally hide the sheet after a selection
-                                // sheetState.hide()
-                                // showBottomSheet = false
+//                                 sheetState.hide()
+//                                 showBottomSheet = false
                             }
                         },
                         repo = repo
@@ -366,22 +396,35 @@ fun UpNextQueue(
     onTrackClick: (String) -> Unit
 ) {
     LazyColumn(modifier = Modifier.padding(bottom = 16.dp)) {
+
         items(queue) { trackInQueue ->
-            val isPlayingNow = trackInQueue["uri"]?.jsonPrimitive?.content == currentTrack?.get("uri")?.jsonPrimitive?.content
-            val clickedUri = trackInQueue["uri"]!!.jsonPrimitive.content
+
+            val trackUri = trackInQueue["uri"]
+                ?.jsonPrimitive
+                ?.contentOrNull
+
+            val currentUri = currentTrack
+                ?.get("uri")
+                ?.jsonPrimitive
+                ?.contentOrNull
+
+            val isPlayingNow = trackUri == currentUri
 
             UpNextQueueItem(
                 trackInQueue = trackInQueue,
                 isCurrent = isPlayingNow,
                 repo = repo,
                 onClick = {
-                    onTrackClick(clickedUri)
-                    Log.d("PlayerScreen", "Clicked on track: $clickedUri")
+                    trackUri?.let {
+                        onTrackClick(it)
+                        Log.d("PlayerScreen", "Clicked on track: $it")
+                    }
                 }
             )
         }
     }
 }
+
 
 @Composable
 fun LyricsScreen(
@@ -427,10 +470,11 @@ fun LyricsScreen(
     }
 }
 
+
+// Helper function remains the same
 fun formatMs(ms: Int): String {
-    if (ms <= 0) return "0:00"
     val totalSeconds = ms / 1000
     val minutes = totalSeconds / 60
     val seconds = totalSeconds % 60
-    return "%d:%02d".format(minutes, seconds)
+    return String.format("%d:%02d", minutes, seconds)
 }

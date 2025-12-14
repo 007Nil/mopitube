@@ -207,8 +207,7 @@ fun TrackShelfView(
         LazyRow(contentPadding = PaddingValues(horizontal = 8.dp)) {
             items(tracks) { track ->
                 val uri = track["uri"]?.jsonPrimitive?.content
-                AlbumItem(repo = repo, album = track, onClick = { uri?.let { onTrackClick(it) } })
-            }
+                AlbumItem(repo = repo, album = track, onClick = { uri?.let { onTrackClick(it) } })            }
         }
     }
 }

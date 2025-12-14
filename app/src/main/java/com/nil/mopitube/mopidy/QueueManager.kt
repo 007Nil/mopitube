@@ -1,5 +1,6 @@
 package com.nil.mopitube.mopidy
 
+import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.json.JsonObject
@@ -14,19 +15,26 @@ class QueueManager {
     private val _queue = MutableStateFlow<List<JsonObject>>(emptyList())
     val queue = _queue.asStateFlow()
 
-    fun setQueue(tracks: List<JsonObject>, currentTrackUri: String?) {
-        val currentIndex = tracks.indexOfFirst { it["uri"]?.jsonPrimitive?.contentOrNull == currentTrackUri }
-        // If the track is found, reorder the list to start with the current track
-        if (currentIndex != -1) {
-            val reorderedQueue = tracks.subList(currentIndex, tracks.size) + tracks.subList(0, currentIndex)
-            _queue.value = reorderedQueue
-        } else {
-            // Otherwise, just set the queue as is
+    fun setQueue(tracks: List<JsonObject>) {
+//        Log.d("QueueManager", "Setting queue: $tracks, currentTrackUri=$currentTrackUri")
+//        val currentIndex = tracks.indexOfFirst { it["uri"]?.jsonPrimitive?.contentOrNull == currentTrackUri }
+//        // If the track is found, reorder the list to start with the current track
+//        if (currentIndex != -1) {
+//            val reorderedQueue = tracks.subList(currentIndex, tracks.size) + tracks.subList(0, currentIndex)
+//            _queue.value = reorderedQueue
+//        } else {
+//            // Otherwise, just set the queue as is
             _queue.value = tracks
-        }
+//        }
     }
 
     fun clearQueue() {
         _queue.value = emptyList()
     }
+
+    fun appendToQueue(tracks: List<JsonObject>) {
+        if (tracks.isEmpty()) return
+        _queue.value = _queue.value + tracks
+    }
+
 }

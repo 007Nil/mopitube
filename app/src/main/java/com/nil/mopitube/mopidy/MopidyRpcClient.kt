@@ -1,9 +1,8 @@
 package com.nil.mopitube.mopidy
 
 import android.util.Log
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -47,15 +46,17 @@ class MopidyRpcClient(
             }
         }
 
-        // Wait for the websocket to be connected up to the same timeout
-        val becameConnected = withTimeoutOrNull(5000L) {
+        // Wait for the websocket to be connected, with a 5-second timeout.
+        val isConnected = withTimeoutOrNull(5000L) {
             ws.connectionState.first { it is ConnectionState.Connected }
-        }
+        } != null
 
-        if (becameConnected == null) {
+        // If not connected after the timeout, abort the request.
+        if (!isConnected) {
             Log.w("MopidyRpcClient", "Request '$method' (id=$id) aborted: WebSocket not connected within timeout.")
             return null
         }
+
 
         val deferred = CompletableDeferred<JsonElement?>()
         pendingRequests[id] = deferred

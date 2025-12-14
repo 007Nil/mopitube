@@ -12,6 +12,12 @@ import com.nil.mopitube.database.Track
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
+import kotlinx.serialization.json.add
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
+import kotlin.collections.component1
+import kotlin.collections.component2
+import kotlin.math.log
 
 // In-memory cache for this app session for maximum speed.
 private object ArtworkProvider {
@@ -28,9 +34,13 @@ class MopidyRepository(
     private val serverAddress: String,
     private val queueManager: QueueManager
 ) {
-    // ===== THE FINAL, CRITICAL FIX IS HERE =====
-    // It now points to the correct unified database and uses the correct dao name.
+
     private val dao = MopitubeDatabase.getDatabase(context).mopitubeDao()
+    private val appendMutex = Mutex()
+
+    private fun normalizeUri(uri: String): String {
+        return URLDecoder.decode(uri, StandardCharsets.UTF_8.name())
+    }
 
     // --- All other functions are now guaranteed to work correctly ---
 
@@ -97,10 +107,6 @@ class MopidyRepository(
     suspend fun deleteAllTracks() {
     }
 
-    /**
-     * Fetches all tracks from the Mopidy server, parses them, and saves them
-     * into the local Room database.
-     */
     suspend fun cacheAllTracksFromServer() {
         // Step 1: Browse for all track URIs (same as in getAllTracks)
         val params = buildJsonObject { put("uri", "local:directory?type=track") }
@@ -205,19 +211,17 @@ class MopidyRepository(
         return rpc.call("core.library.search", params)?.jsonArray ?: emptyList()
     }
 
-    // --- Artwork and Like/Play History Functions ---
-
-    suspend fun playTracks(tracks: List<JsonObject>, startAtTrackUri: String) {
+    suspend fun playTracks(tracks: List<JsonObject>) {
         if (tracks.isEmpty()) return
 
         // 1. Update our app's internal queue first. This is crucial.
-        queueManager.setQueue(tracks, startAtTrackUri)
+        queueManager.setQueue(tracks)
 
         // 2. Get the reordered list of URIs from our queue manager.
         val trackUris = queueManager.queue.value.mapNotNull { it["uri"]?.jsonPrimitive?.contentOrNull }
 
         // 3. Update Mopidy's tracklist to match our queue.
-        rpc.call("core.tracklist.clear")
+//        rpc.call("core.tracklist.clear")
         rpc.call("core.tracklist.add", buildJsonObject { put("uris", buildJsonArray { trackUris.forEach { add(JsonPrimitive(it)) } }) })
 
         // 4. Tell Mopidy to start playing from the beginning of its new tracklist.
@@ -225,12 +229,12 @@ class MopidyRepository(
     }
 
     suspend fun getAlbumImages(albumUri: String): List<String> {
-        val cacheKey = "album-art|$albumUri"
-        ArtworkProvider.get(cacheKey)?.let { return listOf(it) }
-        dao.getArtwork(cacheKey)?.let {
-            ArtworkProvider.put(cacheKey, it.imageUrl)
-            return listOf(it.imageUrl)
-        }
+//        val cacheKey = "album-art|$albumUri"
+//        ArtworkProvider.get(cacheKey)?.let { return listOf(it) }
+//        dao.getArtwork(cacheKey)?.let {
+//            ArtworkProvider.put(cacheKey, it.imageUrl)
+//            return listOf(it.imageUrl)
+//        }
         val params = buildJsonObject { put("uris", JsonArray(listOf(JsonPrimitive(albumUri)))) }
         val res = rpc.call("core.library.get_images", params)
         val imageResultsObject = (res as? JsonObject)?.get(albumUri)
@@ -240,35 +244,58 @@ class MopidyRepository(
             if (imageUri?.startsWith("/") == true) "http://$serverAddress$imageUri" else imageUri
         } ?: emptyList()
         imageUrls.firstOrNull()?.let { foundUrl ->
-            dao.insertArtwork(ArtworkCacheEntry(cacheKey = cacheKey, imageUrl = foundUrl))
-            ArtworkProvider.put(cacheKey, foundUrl)
+//            dao.insertArtwork(ArtworkCacheEntry(cacheKey = cacheKey, imageUrl = foundUrl))
+//            ArtworkProvider.put(cacheKey, foundUrl)
         }
         return imageUrls
     }
 
     suspend fun findArtwork(track: JsonObject?): String? {
         if (track == null) return null
-        val trackUri = track["uri"]?.jsonPrimitive?.contentOrNull ?: return null
-        val cacheKey = "track-art|$trackUri"
-        ArtworkProvider.get(cacheKey)?.let { return it }
-        dao.getArtwork(cacheKey)?.let {
-            ArtworkProvider.put(cacheKey, it.imageUrl)
-            return it.imageUrl
+        // 1. Get the Album URI from the track, not the track's own URI.
+        val albumUri = track["album"]?.jsonObject?.get("uri")?.jsonPrimitive?.contentOrNull
+        if (albumUri.isNullOrBlank()) {
+            Log.w("ArtworkDebug", "Track '${track["name"]?.jsonPrimitive?.content}' has no album URI.")
+            return null
         }
-        val params = buildJsonObject { put("uris", JsonArray(listOf(JsonPrimitive(trackUri)))) }
+
+//         2. Use the Album URI for the cache key.
+//        val cacheKey = "album-art|$albumUri"
+//
+//        // 3. Check memory cache.
+//        ArtworkProvider.get(cacheKey)?.let { return it }
+//
+//        // 4. Check database cache.
+//        dao.getArtwork(cacheKey)?.let {
+//            ArtworkProvider.put(cacheKey, it.imageUrl)
+//            return it.imageUrl
+//        }
+
+        // 5. Fetch from server using the correct ALBUM URI.
+        Log.d("ArtworkDebug", "Fetching artwork for album: $albumUri")
+        val params = buildJsonObject { put("uris", JsonArray(listOf(JsonPrimitive(albumUri)))) }
         val res = rpc.call("core.library.get_images", params)
-        val imageResultsObject = (res as? JsonObject)?.get(trackUri)
+
+        // The result is keyed by the album URI.
+        val imageResultsObject = (res as? JsonObject)?.get(albumUri)
         val arr = imageResultsObject?.jsonArray
         val imageUrl = arr?.mapNotNull {
             val imageUri = it.jsonObject["uri"]?.jsonPrimitive?.contentOrNull
             if (imageUri?.startsWith("/") == true) "http://$serverAddress$imageUri" else imageUri
         }?.firstOrNull()
-        if (imageUrl != null) {
-            dao.insertArtwork(ArtworkCacheEntry(cacheKey = cacheKey, imageUrl = imageUrl))
-            ArtworkProvider.put(cacheKey, imageUrl)
-        }
+
+        // 6. Cache the result.
+//        if (imageUrl != null) {
+//            Log.d("ArtworkDebug", "Found artwork for $albumUri -> $imageUrl")
+//            dao.insertArtwork(ArtworkCacheEntry(cacheKey = cacheKey, imageUrl = imageUrl))
+//            ArtworkProvider.put(cacheKey, imageUrl)
+//        } else {
+//            Log.w("ArtworkDebug", "Server returned no images for album: $albumUri")
+//        }
+        Log.d("RepoImageURL", "$imageUrl")
         return imageUrl
     }
+
 
     suspend fun isTrackLiked(trackUri: String): Boolean {
         return dao.findLikedTrack(trackUri) != null
@@ -326,4 +353,81 @@ class MopidyRepository(
         val result = rpc.call("core.mixer.set_volume", params)
         return result?.jsonPrimitive?.booleanOrNull ?: false
     }
+
+    suspend fun playTrackFromTracklist(trackUri: String): Boolean {
+
+        val normalizedTarget = normalizeUri(trackUri)
+
+        val result = rpc.call("core.tracklist.get_tl_tracks")
+        if (result !is JsonArray) return false
+
+        val tlid = result.firstOrNull { tlTrack ->
+            val tlUri = tlTrack.jsonObject["track"]
+                ?.jsonObject
+                ?.get("uri")
+                ?.jsonPrimitive
+                ?.contentOrNull
+                ?.let { normalizeUri(it) }
+
+            tlUri == normalizedTarget
+        }?.jsonObject
+            ?.get("tlid")
+            ?.jsonPrimitive
+            ?.intOrNull
+
+        if (tlid == null) {
+            Log.w("MopidyRepository", "Track not found in tracklist: $trackUri")
+            return false
+        }
+
+        rpc.call(
+            "core.playback.play",
+            buildJsonObject { put("tlid", JsonPrimitive(tlid)) }
+        )
+
+        Log.d("MopidyRepository", "Playing TLID=$tlid")
+        return true
+    }
+
+
+    suspend fun appendRandomTracksIfNeeded(
+        fetchCount: Int = 20
+    ): Int = appendMutex.withLock {
+
+        val newTracks = getRandomTracks(fetchCount)
+        if (newTracks.isEmpty()) return@withLock 0
+
+        val existingUris = queueManager.queue.value
+            .mapNotNull { it["uri"]?.jsonPrimitive?.contentOrNull }
+            .map { normalizeUri(it) }
+            .toSet()
+
+        val filteredTracks = newTracks.filter {
+            it["uri"]?.jsonPrimitive?.contentOrNull
+                ?.let { normalizeUri(it) } !in existingUris
+        }
+
+        if (filteredTracks.isEmpty()) return@withLock 0
+
+        val newUris = filteredTracks.mapNotNull {
+            it["uri"]?.jsonPrimitive?.contentOrNull
+        }
+
+        rpc.call(
+            "core.tracklist.add",
+            buildJsonObject {
+                put("uris", buildJsonArray {
+                    newUris.forEach { add(it) }
+                })
+            }
+        )
+
+        queueManager.appendToQueue(filteredTracks)
+
+        return@withLock filteredTracks.size
+    }
+
+
+
 }
+
