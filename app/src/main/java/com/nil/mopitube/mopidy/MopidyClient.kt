@@ -23,8 +23,6 @@ class MopidyClient(private val context: Context) {
 //    private lateinit var rpc: MopidyRpcClient
 //    lateinit var repo: MopidyRepository
 
-    val queueManager = QueueManager()
-
     // This is the single source of truth that the UI will observe.
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Idle)
     val connectionState: StateFlow<ConnectionState> = _connectionState
@@ -54,7 +52,7 @@ class MopidyClient(private val context: Context) {
         val ws = MopidyWebSocket("ws://$host:$port/mopidy/ws", scope, _connectionState)
         webSocket = ws
         rpc = MopidyRpcClient(ws, scope)
-        repo = MopidyRepository(rpc!!, context, "$host:$port", queueManager) // We can use '!!' here because we just created it.
+        repo = MopidyRepository(rpc!!, context, "$host:$port") // We can use '!!' here because we just created it.
 
         ws.connect()
     }
