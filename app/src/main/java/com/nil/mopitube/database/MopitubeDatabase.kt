@@ -61,18 +61,25 @@ interface MopitubeDao {
     @Query("DELETE FROM liked_tracks WHERE uri = :trackUri")
     suspend fun unlikeTrack(trackUri: String)
 
-    // ===== NEW: Play History Methods =====
+    // ===== Track Cache Methods =====
+    @Query("DELETE FROM tracks")
+    suspend fun deleteAllTracks()
+
+    // ===== Play History Methods =====
     @Insert
     suspend fun insertPlayHistory(entry: PlayHistoryEntry)
 
     @Query("""
-        SELECT uri, COUNT(uri) as playCount 
-        FROM play_history 
-        GROUP BY uri 
-        ORDER BY playCount DESC 
+        SELECT uri, COUNT(uri) as playCount
+        FROM play_history
+        GROUP BY uri
+        ORDER BY playCount DESC
         LIMIT :limit
     """)
     suspend fun getMostPlayed(limit: Int): List<TrackPlayCount>
+
+    @Query("DELETE FROM play_history WHERE timestamp < :cutoffTimestamp")
+    suspend fun deletePlayHistoryOlderThan(cutoffTimestamp: Long)
 }
 
 // --- Database Definition (Updated) ---

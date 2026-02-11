@@ -2,8 +2,6 @@ package com.nil.mopitube.mopidy
 
 import android.content.Context
 import android.util.Log
-import androidx.compose.foundation.layout.size
-import androidx.room.Query
 import com.nil.mopitube.database.ArtworkCacheEntry
 import com.nil.mopitube.database.LikedTrack
 import com.nil.mopitube.database.MopitubeDatabase // Import the CORRECT database
@@ -19,13 +17,17 @@ import kotlin.collections.component1
 import kotlin.collections.component2
 import kotlin.math.log
 
-// In-memory cache for this app session for maximum speed.
+// In-memory LRU cache for artwork URLs (max 300 entries).
 private object ArtworkProvider {
-    private val cache = mutableMapOf<String, String>()
+    private const val MAX_ENTRIES = 300
+    private val cache = object : LinkedHashMap<String, String>(MAX_ENTRIES, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean {
+            return size > MAX_ENTRIES
+        }
+    }
     private val mutex = Mutex()
     suspend fun get(key: String): String? = mutex.withLock { cache[key] }
     suspend fun put(key: String, url: String) = mutex.withLock { cache[key] = url }
-
 }
 
 class MopidyRepository(
@@ -35,6 +37,22 @@ class MopidyRepository(
 ) {
 
     private val dao = MopitubeDatabase.getDatabase(context).mopitubeDao()
+    private val prefs = context.getSharedPreferences("mopitube_cache", Context.MODE_PRIVATE)
+    private val trackCacheKey = "track_cache_timestamp_$serverAddress"
+
+    companion object {
+        private const val TRACK_CACHE_TTL_MS = 24 * 60 * 60 * 1000L // 24 hours
+        private const val PLAY_HISTORY_MAX_AGE_MS = 90L * 24 * 60 * 60 * 1000 // 90 days
+    }
+
+    private fun isTrackCacheExpired(): Boolean {
+        val lastCached = prefs.getLong(trackCacheKey, 0)
+        return System.currentTimeMillis() - lastCached > TRACK_CACHE_TTL_MS
+    }
+
+    private fun updateTrackCacheTimestamp() {
+        prefs.edit().putLong(trackCacheKey, System.currentTimeMillis()).apply()
+    }
 
     private fun normalizeUri(uri: String): String {
         return URLDecoder.decode(uri, StandardCharsets.UTF_8.name())
@@ -58,11 +76,10 @@ class MopidyRepository(
         // Step 1: Attempt to get all tracks from the local database first.
         var cachedTracks = dao.getAllCachedTracks()
 
-        // Step 2: If the cache is empty, fetch from the server and populate it.
-        if (cachedTracks.isEmpty()) {
-            Log.d("MopidyRepository", "Track cache is empty. Fetching from server...")
+        // Step 2: If the cache is empty or expired, fetch from the server and populate it.
+        if (cachedTracks.isEmpty() || isTrackCacheExpired()) {
+            Log.d("MopidyRepository", "Track cache is empty or expired. Fetching from server...")
             cacheAllTracksFromServer()
-            // After caching, query the database again.
             cachedTracks = dao.getAllCachedTracks()
         } else {
             Log.d("MopidyRepository", "Loaded ${cachedTracks.size} tracks from local cache.")
@@ -101,8 +118,8 @@ class MopidyRepository(
         Log.d("MopidyRepository", "Track refresh complete.")
     }
 
-    @Query("DELETE FROM tracks") // This is the SQL command to delete all rows
-    suspend fun deleteAllTracks() {
+    private suspend fun deleteAllTracks() {
+        dao.deleteAllTracks()
     }
 
     suspend fun cacheAllTracksFromServer() {
@@ -146,6 +163,7 @@ class MopidyRepository(
         // Step 4: Save the parsed tracks to the database
         if (tracksToCache.isNotEmpty()) {
             dao.insertAllTracks(tracksToCache)
+            updateTrackCacheTimestamp()
             Log.d("MopidyRepository", "Successfully cached ${tracksToCache.size} tracks.")
         }
     }
@@ -229,12 +247,12 @@ class MopidyRepository(
     }
 
     suspend fun getAlbumImages(albumUri: String): List<String> {
-//        val cacheKey = "album-art|$albumUri"
-//        ArtworkProvider.get(cacheKey)?.let { return listOf(it) }
-//        dao.getArtwork(cacheKey)?.let {
-//            ArtworkProvider.put(cacheKey, it.imageUrl)
-//            return listOf(it.imageUrl)
-//        }
+        val cacheKey = "album-art|$albumUri"
+        ArtworkProvider.get(cacheKey)?.let { return listOf(it) }
+        dao.getArtwork(cacheKey)?.let {
+            ArtworkProvider.put(cacheKey, it.imageUrl)
+            return listOf(it.imageUrl)
+        }
         val params = buildJsonObject { put("uris", JsonArray(listOf(JsonPrimitive(albumUri)))) }
         val res = rpc.call("core.library.get_images", params)
         val imageResultsObject = (res as? JsonObject)?.get(albumUri)
@@ -244,8 +262,8 @@ class MopidyRepository(
             if (imageUri?.startsWith("/") == true) "http://$serverAddress$imageUri" else imageUri
         } ?: emptyList()
         imageUrls.firstOrNull()?.let { foundUrl ->
-//            dao.insertArtwork(ArtworkCacheEntry(cacheKey = cacheKey, imageUrl = foundUrl))
-//            ArtworkProvider.put(cacheKey, foundUrl)
+            dao.insertArtwork(ArtworkCacheEntry(cacheKey = cacheKey, imageUrl = foundUrl))
+            ArtworkProvider.put(cacheKey, foundUrl)
         }
         return imageUrls
     }
@@ -259,20 +277,19 @@ class MopidyRepository(
             return null
         }
 
-//         2. Use the Album URI for the cache key.
-//        val cacheKey = "album-art|$albumUri"
-//
-//        // 3. Check memory cache.
-//        ArtworkProvider.get(cacheKey)?.let { return it }
-//
-//        // 4. Check database cache.
-//        dao.getArtwork(cacheKey)?.let {
-//            ArtworkProvider.put(cacheKey, it.imageUrl)
-//            return it.imageUrl
-//        }
+        // 2. Use the Album URI for the cache key.
+        val cacheKey = "album-art|$albumUri"
+
+        // 3. Check memory cache.
+        ArtworkProvider.get(cacheKey)?.let { return it }
+
+        // 4. Check database cache.
+        dao.getArtwork(cacheKey)?.let {
+            ArtworkProvider.put(cacheKey, it.imageUrl)
+            return it.imageUrl
+        }
 
         // 5. Fetch from server using the correct ALBUM URI.
-        Log.d("ArtworkDebug", "Fetching artwork for album: $albumUri")
         val params = buildJsonObject { put("uris", JsonArray(listOf(JsonPrimitive(albumUri)))) }
         val res = rpc.call("core.library.get_images", params)
 
@@ -285,14 +302,10 @@ class MopidyRepository(
         }?.firstOrNull()
 
         // 6. Cache the result.
-//        if (imageUrl != null) {
-//            Log.d("ArtworkDebug", "Found artwork for $albumUri -> $imageUrl")
-//            dao.insertArtwork(ArtworkCacheEntry(cacheKey = cacheKey, imageUrl = imageUrl))
-//            ArtworkProvider.put(cacheKey, imageUrl)
-//        } else {
-//            Log.w("ArtworkDebug", "Server returned no images for album: $albumUri")
-//        }
-        Log.d("RepoImageURL", "$imageUrl")
+        if (imageUrl != null) {
+            dao.insertArtwork(ArtworkCacheEntry(cacheKey = cacheKey, imageUrl = imageUrl))
+            ArtworkProvider.put(cacheKey, imageUrl)
+        }
         return imageUrl
     }
 
@@ -331,6 +344,8 @@ class MopidyRepository(
     suspend fun logTrackPlay(trackUri: String) {
         if (trackUri.isBlank()) return
         dao.insertPlayHistory(PlayHistoryEntry(uri = trackUri))
+        // Prune entries older than 90 days
+        dao.deletePlayHistoryOlderThan(System.currentTimeMillis() - PLAY_HISTORY_MAX_AGE_MS)
     }
 
     suspend fun getMostPlayedTracks(count: Int = 10): List<JsonObject> {

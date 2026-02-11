@@ -187,10 +187,10 @@ fun AppNav(
                     )
                 }
                 composable("server_settings") {
-                    ServerSettingsScreen(onNavigateBack = { navController.navigateUp() })
+                    ServerSettingsScreen()
                 }
                 composable("client_settings") {
-                    ClientSettingsScreen(onNavigateBack = { navController.navigateUp() })
+                    ClientSettingsScreen(repo = client.repo)
                 }
                 composable("settings") {
                     SettingsScreen(
