@@ -31,12 +31,10 @@ private object ArtworkProvider {
 class MopidyRepository(
     val rpc: MopidyRpcClient,
     context: Context,
-    private val serverAddress: String,
-    private val queueManager: QueueManager
+    private val serverAddress: String
 ) {
 
     private val dao = MopitubeDatabase.getDatabase(context).mopitubeDao()
-    private val appendMutex = Mutex()
 
     private fun normalizeUri(uri: String): String {
         return URLDecoder.decode(uri, StandardCharsets.UTF_8.name())
@@ -175,6 +173,25 @@ class MopidyRepository(
         val params = buildJsonObject { put("uris", buildJsonArray { add(JsonPrimitive(trackUri)) }) }
         rpc.call("core.tracklist.add", params)
     }
+
+    suspend fun getTracklistLength(): Int? {
+        val result = rpc.call("core.tracklist.get_length")
+        return result?.jsonPrimitive?.intOrNull
+    }
+
+    suspend fun getCurrentTrackTlid(): Int? {
+        val result = rpc.call("core.playback.get_current_tl_track")
+        return result?.jsonObject?.get("tlid")?.jsonPrimitive?.intOrNull
+    }
+
+    suspend fun getTracklistTracks(): List<JsonObject> {
+        val result = rpc.call("core.tracklist.get_tl_tracks")
+        if (result !is JsonArray) return emptyList()
+        return result.mapNotNull {
+            it.jsonObject?.get("track")?.jsonObject
+        }
+    }
+
     suspend fun getPlaylists(): List<JsonObject> {
         val result = rpc.call("core.playlists.as_list")
         return result?.jsonArray?.mapNotNull { it.jsonObject } ?: emptyList()
@@ -209,23 +226,6 @@ class MopidyRepository(
     suspend fun search(query: Map<String, List<String>>): List<JsonElement> {
         val params = buildJsonObject { put("query", buildJsonObject { query.forEach { (k, v) -> put(k, buildJsonArray { v.forEach { add(it) } }) } }) }
         return rpc.call("core.library.search", params)?.jsonArray ?: emptyList()
-    }
-
-    suspend fun playTracks(tracks: List<JsonObject>) {
-        if (tracks.isEmpty()) return
-
-        // 1. Update our app's internal queue first. This is crucial.
-        queueManager.setQueue(tracks)
-
-        // 2. Get the reordered list of URIs from our queue manager.
-        val trackUris = queueManager.queue.value.mapNotNull { it["uri"]?.jsonPrimitive?.contentOrNull }
-
-        // 3. Update Mopidy's tracklist to match our queue.
-//        rpc.call("core.tracklist.clear")
-        rpc.call("core.tracklist.add", buildJsonObject { put("uris", buildJsonArray { trackUris.forEach { add(JsonPrimitive(it)) } }) })
-
-        // 4. Tell Mopidy to start playing from the beginning of its new tracklist.
-        rpc.call("core.playback.play")
     }
 
     suspend fun getAlbumImages(albumUri: String): List<String> {
@@ -388,45 +388,6 @@ class MopidyRepository(
         Log.d("MopidyRepository", "Playing TLID=$tlid")
         return true
     }
-
-
-    suspend fun appendRandomTracksIfNeeded(
-        fetchCount: Int = 20
-    ): Int = appendMutex.withLock {
-
-        val newTracks = getRandomTracks(fetchCount)
-        if (newTracks.isEmpty()) return@withLock 0
-
-        val existingUris = queueManager.queue.value
-            .mapNotNull { it["uri"]?.jsonPrimitive?.contentOrNull }
-            .map { normalizeUri(it) }
-            .toSet()
-
-        val filteredTracks = newTracks.filter {
-            it["uri"]?.jsonPrimitive?.contentOrNull
-                ?.let { normalizeUri(it) } !in existingUris
-        }
-
-        if (filteredTracks.isEmpty()) return@withLock 0
-
-        val newUris = filteredTracks.mapNotNull {
-            it["uri"]?.jsonPrimitive?.contentOrNull
-        }
-
-        rpc.call(
-            "core.tracklist.add",
-            buildJsonObject {
-                put("uris", buildJsonArray {
-                    newUris.forEach { add(it) }
-                })
-            }
-        )
-
-        queueManager.appendToQueue(filteredTracks)
-
-        return@withLock filteredTracks.size
-    }
-
 
 
 }
