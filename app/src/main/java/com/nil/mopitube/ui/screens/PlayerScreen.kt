@@ -55,9 +55,10 @@ fun PlayerScreen(
         // Early return to prevent the rest of the composable from running with a null repo.
         return
     }
-    val queueManager = client.queueManager
     val scope = rememberCoroutineScope()
-    val queue by queueManager.queue.collectAsState()
+    var queue by remember { mutableStateOf<List<JsonObject>>(emptyList()) }
+    var tracklistLength by remember { mutableStateOf(0) }
+    var currentPosition by remember { mutableStateOf(-1) }
 
     var currentTrack by remember { mutableStateOf<JsonObject?>(null) }
     var artworkUrl by remember { mutableStateOf<String?>(null) }
@@ -105,38 +106,64 @@ fun PlayerScreen(
         }
     }
 
-    LaunchedEffect(queue, repo) {
-        // Check if the queue from the queueManager is empty and the repo is available.
-        if (queue.isEmpty() && repo != null) {
-            scope.launch {
-                // Fetch 20 random songs from the library.
-                val randomSongs = repo.getRandomTracks(20)
-                if (randomSongs.isNotEmpty()) {
-                    repo.playTracks(randomSongs)
+    // Queue monitoring and auto-append
+    LaunchedEffect(repo) {
+        while (true) {
+            withContext(Dispatchers.IO) {
+                try {
+                    // Fetch current tracklist from Mopidy
+                    val tracklistTracks = repo.getTracklistTracks()
+                    queue = tracklistTracks
+                    tracklistLength = tracklistTracks.size
+
+                    // Find current track position by URI matching
+                    val currentUri = currentTrack?.get("uri")?.jsonPrimitive?.contentOrNull
+                    if (currentUri != null) {
+                        currentPosition = tracklistTracks.indexOfFirst {
+                            it["uri"]?.jsonPrimitive?.contentOrNull == currentUri
+                        }
+
+                        // Auto-append when reaching last 3 tracks
+                        if (currentPosition != -1 && tracklistLength > 0) {
+                            val remaining = tracklistLength - currentPosition - 1
+                            if (remaining <= 3) {
+                                Log.d("PlayerScreen", "Queue low ($remaining remaining). Appending more tracks")
+
+                                // Fetch 20 random tracks
+                                val randomTracks = repo.getRandomTracks(20)
+
+                                // Get existing URIs to filter duplicates
+                                val existingUris = tracklistTracks.mapNotNull {
+                                    it["uri"]?.jsonPrimitive?.contentOrNull
+                                }.toSet()
+
+                                // Filter out duplicates
+                                val newTracks = randomTracks.filter {
+                                    val uri = it["uri"]?.jsonPrimitive?.contentOrNull
+                                    uri != null && uri !in existingUris
+                                }
+
+                                // Append unique tracks via RPC
+                                if (newTracks.isNotEmpty()) {
+                                    val trackUris = newTracks.mapNotNull {
+                                        it["uri"]?.jsonPrimitive?.contentOrNull
+                                    }
+                                    val params = buildJsonObject {
+                                        put("uris", buildJsonArray {
+                                            trackUris.forEach { add(JsonPrimitive(it)) }
+                                        })
+                                    }
+                                    repo.rpc.call("core.tracklist.add", params)
+                                    Log.d("PlayerScreen", "Appended ${newTracks.size} new tracks")
+                                }
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("PlayerScreen", "Queue monitoring error", e)
                 }
             }
-        }
-    }
-
-    LaunchedEffect(currentTrack, queue) {
-        val track = currentTrack ?: return@LaunchedEffect
-        val currentUri = track["uri"]?.jsonPrimitive?.contentOrNull ?: return@LaunchedEffect
-
-        val currentIndex = queue.indexOfFirst {
-            it["uri"]?.jsonPrimitive?.contentOrNull == currentUri
-        }
-
-        if (currentIndex == -1) return@LaunchedEffect
-
-        val remaining = queue.size - currentIndex - 1
-
-        if (remaining <= 20) {
-            Log.d("PlayerScreen", "Queue low ($remaining remaining). Appending more tracks")
-
-            scope.launch(Dispatchers.IO) {
-                repo.appendRandomTracksIfNeeded(fetchCount = 20)
-
-            }
+            delay(1000) // Poll every 1 second
         }
     }
 

@@ -28,6 +28,11 @@ import com.nil.mopitube.ui.screens.settings.SettingsScreen
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.net.URLDecoder
 import java.net.URLEncoder
 
@@ -207,8 +212,34 @@ fun AppNav(
                     scope.launch {
                         client.repo?.let { repo ->
                             try {
+                                // Clear tracklist
                                 repo.clearTracklist()
+
+                                // Add clicked track first
                                 repo.addTrackToTracklist(trackUri)
+
+                                // Fetch 19 random tracks for autoplay
+                                val randomTracks = repo.getRandomTracks(19)
+
+                                // Filter out clicked track to avoid duplicates
+                                val filteredTracks = randomTracks.filter {
+                                    it["uri"]?.jsonPrimitive?.content != trackUri
+                                }.take(19)
+
+                                // Add filtered tracks via batch RPC call
+                                if (filteredTracks.isNotEmpty()) {
+                                    val trackUris = filteredTracks.mapNotNull {
+                                        it["uri"]?.jsonPrimitive?.content
+                                    }
+                                    val params = buildJsonObject {
+                                        put("uris", buildJsonArray {
+                                            trackUris.forEach { add(JsonPrimitive(it)) }
+                                        })
+                                    }
+                                    repo.rpc.call("core.tracklist.add", params)
+                                }
+
+                                // Start playback
                                 repo.play()
                                 withContext(Dispatchers.IO) { repo.logTrackPlay(trackUri) }
                                 navController.navigate("player")
