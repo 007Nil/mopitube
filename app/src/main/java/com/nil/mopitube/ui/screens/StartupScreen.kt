@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -37,20 +38,22 @@ fun StartupScreen(
     // Observe the detailed connection state from the client
     val state by client.connectionState.collectAsState()
 
-    // This LaunchedEffect will run once to check settings and decide the course of action.
-    LaunchedEffect(Unit) {
-        // Read the server settings from DataStore.
-        // .first() gets the initial value and completes the flow for this one-time check.
-        val host = userPreferencesRepository.serverHost.first()
-        val port = userPreferencesRepository.serverPort.first()
+    // This LaunchedEffect watches the connection state and starts connection when Idle.
+    // It re-reads settings on each Idle state, so updated settings are picked up on Retry.
+    LaunchedEffect(state) {
+        if (state is ConnectionState.Idle) {
+            // Read the server settings from DataStore.
+            val host = userPreferencesRepository.serverHost.first()
+            val port = userPreferencesRepository.serverPort.first()
 
-        if (host.isBlank() || port.isBlank()) {
-            // If settings are missing, navigate to the Settings screen.
-            onNavigateToSettings()
-        } else {
-            // If settings are present, update the client and start the connection.
-            client.updateServerConfig(host, port)
-            client.start()
+            if (host.isBlank() || port.isBlank()) {
+                // If settings are missing, navigate to the Settings screen.
+                onNavigateToSettings()
+            } else {
+                // If settings are present, update the client and start the connection.
+                client.updateServerConfig(host, port)
+                client.start()
+            }
         }
     }
 
@@ -84,14 +87,14 @@ fun StartupScreen(
                     // Provide the reason for the failure
                     Text(currentState.reason ?: "Unknown error")
                     Spacer(Modifier.height(16.dp))
-                    // Add a button to allow the user to retry
-                    Button(onClick = { client.retryConnection() }) {
+                    // Retry button: shutdown to trigger Idle state, which re-reads settings
+                    Button(onClick = { client.shutdown() }) {
                         Text("Retry")
                     }
                     Spacer(Modifier.height(8.dp))
-                    // Add a button to navigate to settings
-                    Button(onClick = onNavigateToSettings) {
-                        Text("Go to Settings")
+                    // Navigate to server settings to change connection details
+                    OutlinedButton(onClick = onNavigateToSettings) {
+                        Text("Change Server")
                     }
                 }
             }

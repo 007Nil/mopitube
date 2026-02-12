@@ -20,6 +20,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.nil.mopitube.mopidy.ConnectionState
 import com.nil.mopitube.ui.components.AppDrawer
 import com.nil.mopitube.ui.screens.*
 import com.nil.mopitube.ui.screens.settings.ClientSettingsScreen
@@ -62,20 +63,30 @@ fun AppNav(
         BottomNavItem("liked_songs", "Library", Icons.Filled.Favorite, Icons.Outlined.FavoriteBorder)
     )
 
-    // --- DEFINITIVE FIX FOR NAVIGATION ---
-    // This logic now correctly waits for the repository to be ready and uses a
-    // flag in the ViewModel to ensure navigation happens exactly once.
-    LaunchedEffect(client.repo) {
-        if (client.repo != null && !appNavViewModel.hasNavigatedFromStartup) {
-            // ...it is now SAFE to navigate because the "home" route always exists in the graph below.
-            navController.navigate("home") {
-                // Pop up to the start destination to clear the startup screen from the back stack.
-                popUpTo(navController.graph.findStartDestination().id) {
-                    inclusive = true
+    // --- CONNECTION-AWARE NAVIGATION ---
+    // Watch connection state and navigate between startup/reconnect and home based on connection status
+    val connectionState by client.connectionState.collectAsState()
+
+    LaunchedEffect(connectionState) {
+        when {
+            // Successfully connected and haven't navigated yet → go to home
+            connectionState is ConnectionState.Connected && !appNavViewModel.hasNavigatedFromStartup -> {
+                navController.navigate("home") {
+                    popUpTo(navController.graph.findStartDestination().id) {
+                        inclusive = true
+                    }
+                }
+                appNavViewModel.hasNavigatedFromStartup = true
+            }
+            // Connection lost after we've been using the app → go back to reconnect screen
+            connectionState is ConnectionState.Disconnected && appNavViewModel.hasNavigatedFromStartup -> {
+                appNavViewModel.hasNavigatedFromStartup = false
+                navController.navigate("reconnect") {
+                    popUpTo(navController.graph.findStartDestination().id) {
+                        inclusive = true
+                    }
                 }
             }
-            // CRITICAL: Mark that we have performed the initial navigation.
-            appNavViewModel.hasNavigatedFromStartup = true
         }
     }
 
@@ -183,7 +194,14 @@ fun AppNav(
                 composable("startup") {
                     StartupScreen(
                         client = client,
-                        onNavigateToSettings = { navController.navigate("settings") }
+                        onNavigateToSettings = { navController.navigate("server_settings") }
+                    )
+                }
+                composable("reconnect") {
+                    ReconnectScreen(
+                        client = client,
+                        connectionState = connectionState,
+                        onNavigateToServerSettings = { navController.navigate("server_settings") }
                     )
                 }
                 composable("server_settings") {
