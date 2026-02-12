@@ -18,6 +18,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.nil.mopitube.mopidy.MopidyRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -38,13 +41,16 @@ fun MiniPlayer(
     var isPlaying by remember { mutableStateOf(false) }
     var artworkUrl by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
 
-    // Poll for track and playback state
+    // Poll for track and playback state — only when foregrounded
     LaunchedEffect(Unit) {
-        while (true) {
-            currentTrack = repo.getCurrentTrack()
-            isPlaying = repo.getPlaybackState() == "playing"
-            delay(1500)
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                currentTrack = repo.getCurrentTrack()
+                isPlaying = repo.getPlaybackState() == "playing"
+                delay(1500)
+            }
         }
     }
 

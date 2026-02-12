@@ -98,4 +98,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
     implementation("androidx.lifecycle:lifecycle-process:2.6.2")
     implementation("androidx.datastore:datastore-preferences:1.1.1")
+
+    // Media for notifications
+    implementation("androidx.media:media:1.7.0")
 }

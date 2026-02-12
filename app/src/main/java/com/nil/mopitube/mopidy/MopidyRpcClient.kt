@@ -1,6 +1,7 @@
 package com.nil.mopitube.mopidy
 
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
@@ -19,6 +20,7 @@ class MopidyRpcClient(
     private val pendingRequests = ConcurrentHashMap<Int, CompletableDeferred<JsonElement?>>()
 
     init {
+        // Collect incoming messages and resolve pending requests
         scope.launch {
             ws.messages.collect { message ->
                 try {
@@ -32,6 +34,27 @@ class MopidyRpcClient(
                     Log.e("MopidyRpcClient", "Failed to parse message: $message", e)
                 }
             }
+        }
+
+        // Cancel all pending requests when the WebSocket disconnects
+        scope.launch {
+            ws.connectionState.collect { state ->
+                if (state is ConnectionState.Disconnected) {
+                    cancelAllPending()
+                }
+            }
+        }
+    }
+
+    /** Immediately fail all pending RPC requests so callers don't block. */
+    private fun cancelAllPending() {
+        val ids = pendingRequests.keys().toList()
+        for (id in ids) {
+            val deferred = pendingRequests.remove(id)
+            deferred?.cancel(CancellationException("WebSocket disconnected"))
+        }
+        if (ids.isNotEmpty()) {
+            Log.d("MopidyRpcClient", "Cancelled ${ids.size} pending requests due to disconnect")
         }
     }
 
@@ -63,15 +86,19 @@ class MopidyRpcClient(
 
         ws.send(request.toString())
 
-        val result = withTimeoutOrNull(5000L) {
-            deferred.await()
-        }
-
-        if (result == null) {
-            Log.w("MopidyRpcClient", "Request '$method' (id=$id) timed out.")
+        return try {
+            val result = withTimeoutOrNull(5000L) {
+                deferred.await()
+            }
+            if (result == null) {
+                Log.w("MopidyRpcClient", "Request '$method' (id=$id) timed out.")
+                pendingRequests.remove(id)
+            }
+            result
+        } catch (e: CancellationException) {
+            Log.w("MopidyRpcClient", "Request '$method' (id=$id) cancelled: ${e.message}")
             pendingRequests.remove(id)
+            null
         }
-
-        return result
     }
 }

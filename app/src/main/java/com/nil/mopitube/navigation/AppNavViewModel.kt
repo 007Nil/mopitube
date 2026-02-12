@@ -3,6 +3,7 @@ package com.nil.mopitube.navigation
 import android.app.Application
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
+import com.nil.mopitube.App
 import com.nil.mopitube.mopidy.MopidyClient
 import androidx.compose.runtime.getValue // <-- Added
 import androidx.compose.runtime.mutableStateOf // <-- Added
@@ -18,12 +19,16 @@ class AppNavViewModel(application: Application) : AndroidViewModel(application) 
 
     // The MopidyClient is now created once and managed by the ViewModel.
     // It's exposed as a non-nullable property, simplifying the UI code.
-    val client: MopidyClient = MopidyClient(application.applicationContext)
+    val client: MopidyClient = MopidyClient(application.applicationContext).also {
+        // Store reference in App for PlaybackService access
+        App.mopidyClient = it
+    }
     var hasNavigatedFromStartup by mutableStateOf(false)
     // The ViewModel will automatically be cleared when it's no longer needed (e.g., app is closed),
     // and its onCleared() method is the perfect place to shut down the client connection.
     override fun onCleared() {
         super.onCleared()
+        App.mopidyClient = null
         client.shutdown()
     }
 }

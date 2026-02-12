@@ -48,7 +48,7 @@ fun TrackListItem(
     track: JsonObject,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    onAddToQueue: () -> Job
+    onAddToQueue: (() -> Job)? = null
 ) {
     val trackName = track["name"]?.jsonPrimitive?.contentOrNull ?: "Unknown Track"
     var imageUrl by remember { mutableStateOf<String?>(null) }
@@ -101,41 +101,45 @@ fun TrackListItem(
                 }
             }
         },
-        // Trailing content for the dropdown menu
-        trailingContent = {
-            Box {
-                // You can have an icon to indicate a menu is available
-                IconButton(onClick = { showMenu = true }) {
-                    Icon(Icons.Default.MoreVert, contentDescription = "More options")
-                }
+        // Trailing content for the dropdown menu (only shown if onAddToQueue is provided)
+        trailingContent = if (onAddToQueue != null) {
+            {
+                Box {
+                    // You can have an icon to indicate a menu is available
+                    IconButton(onClick = { showMenu = true }) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "More options")
+                    }
 
-                // The DropdownMenu
-                DropdownMenu(
-                    expanded = showMenu,
-                    onDismissRequest = { showMenu = false }
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("Add to queue") },
-                        onClick = {
-                            // TODO: Implement "Add to queue" logic
-                            showMenu = false
-                        },
-                        leadingIcon = {
-                            Icon(Icons.Default.QueueMusic, contentDescription = "Add to queue")
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Play next") },
-                        onClick = {
-                            // TODO: Implement "Play next" logic
-                            showMenu = false
-                        },
-                        leadingIcon = {
-                            Icon(Icons.Default.PlaylistPlay, contentDescription = "Play next")
-                        }
-                    )
+                    // The DropdownMenu
+                    DropdownMenu(
+                        expanded = showMenu,
+                        onDismissRequest = { showMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Add to queue") },
+                            onClick = {
+                                // TODO: Implement "Add to queue" logic
+                                showMenu = false
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Default.QueueMusic, contentDescription = "Add to queue")
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Play next") },
+                            onClick = {
+                                // TODO: Implement "Play next" logic
+                                showMenu = false
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Default.PlaylistPlay, contentDescription = "Play next")
+                            }
+                        )
+                    }
                 }
             }
+        } else {
+            null
         }
     )
 }

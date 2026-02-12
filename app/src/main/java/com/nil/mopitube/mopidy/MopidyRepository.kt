@@ -2,13 +2,14 @@ package com.nil.mopitube.mopidy
 
 import android.content.Context
 import android.util.Log
-import androidx.compose.foundation.layout.size
-import androidx.room.Query
 import com.nil.mopitube.database.ArtworkCacheEntry
 import com.nil.mopitube.database.LikedTrack
 import com.nil.mopitube.database.MopitubeDatabase // Import the CORRECT database
 import com.nil.mopitube.database.PlayHistoryEntry
 import com.nil.mopitube.database.Track
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
@@ -19,24 +20,52 @@ import kotlin.collections.component1
 import kotlin.collections.component2
 import kotlin.math.log
 
-// In-memory cache for this app session for maximum speed.
+// In-memory LRU cache for artwork URLs (max 300 entries).
 private object ArtworkProvider {
-    private val cache = mutableMapOf<String, String>()
+    private const val MAX_ENTRIES = 300
+    private val cache = object : LinkedHashMap<String, String>(MAX_ENTRIES, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean {
+            return size > MAX_ENTRIES
+        }
+    }
     private val mutex = Mutex()
     suspend fun get(key: String): String? = mutex.withLock { cache[key] }
     suspend fun put(key: String, url: String) = mutex.withLock { cache[key] = url }
-
 }
 
 class MopidyRepository(
     val rpc: MopidyRpcClient,
     context: Context,
-    private val serverAddress: String,
-    private val queueManager: QueueManager
+    private val serverAddress: String
 ) {
 
     private val dao = MopitubeDatabase.getDatabase(context).mopitubeDao()
-    private val appendMutex = Mutex()
+    private val prefs = context.getSharedPreferences("mopitube_cache", Context.MODE_PRIVATE)
+    private val trackCacheKey = "track_cache_timestamp_$serverAddress"
+
+    // Playback state flows for notification service
+    private val _currentTrack = MutableStateFlow<JsonObject?>(null)
+    val currentTrack: StateFlow<JsonObject?> = _currentTrack.asStateFlow()
+
+    private val _playbackState = MutableStateFlow<String?>(null)
+    val playbackState: StateFlow<String?> = _playbackState.asStateFlow()
+
+    private val _timePosition = MutableStateFlow<Int?>(null)
+    val timePosition: StateFlow<Int?> = _timePosition.asStateFlow()
+
+    companion object {
+        private const val TRACK_CACHE_TTL_MS = 24 * 60 * 60 * 1000L // 24 hours
+        private const val PLAY_HISTORY_MAX_AGE_MS = 90L * 24 * 60 * 60 * 1000 // 90 days
+    }
+
+    private fun isTrackCacheExpired(): Boolean {
+        val lastCached = prefs.getLong(trackCacheKey, 0)
+        return System.currentTimeMillis() - lastCached > TRACK_CACHE_TTL_MS
+    }
+
+    private fun updateTrackCacheTimestamp() {
+        prefs.edit().putLong(trackCacheKey, System.currentTimeMillis()).apply()
+    }
 
     private fun normalizeUri(uri: String): String {
         return URLDecoder.decode(uri, StandardCharsets.UTF_8.name())
@@ -44,13 +73,36 @@ class MopidyRepository(
 
     // --- All other functions are now guaranteed to work correctly ---
 
-    suspend fun play() = rpc.call("core.playback.play")
-    suspend fun pause() = rpc.call("core.playback.pause")
-    suspend fun next() = rpc.call("core.playback.next")
-    suspend fun previous() = rpc.call("core.playback.previous")
+    suspend fun play() {
+        rpc.call("core.playback.play")
+        updatePlaybackState()
+    }
+
+    suspend fun pause() {
+        rpc.call("core.playback.pause")
+        updatePlaybackState()
+    }
+
+    suspend fun next() {
+        rpc.call("core.playback.next")
+        updatePlaybackState()
+    }
+
+    suspend fun previous() {
+        rpc.call("core.playback.previous")
+        updatePlaybackState()
+    }
+
     suspend fun getCurrentTrack(): JsonObject? = rpc.call("core.playback.get_current_track") as? JsonObject
     suspend fun getPlaybackState(): String? = rpc.call("core.playback.get_state")?.jsonPrimitive?.contentOrNull
     suspend fun getTimePosition(): Int? = rpc.call("core.playback.get_time_position")?.jsonPrimitive?.intOrNull
+
+    // Update all playback state flows (called by PlayerScreen polling and by playback actions)
+    suspend fun updatePlaybackState() {
+        _currentTrack.value = getCurrentTrack()
+        _playbackState.value = getPlaybackState()
+        _timePosition.value = getTimePosition()
+    }
     suspend fun seek(ms: Int) {
         val params = buildJsonObject { put("time_position", JsonPrimitive(ms)) }
         rpc.call("core.playback.seek", params)
@@ -60,11 +112,10 @@ class MopidyRepository(
         // Step 1: Attempt to get all tracks from the local database first.
         var cachedTracks = dao.getAllCachedTracks()
 
-        // Step 2: If the cache is empty, fetch from the server and populate it.
-        if (cachedTracks.isEmpty()) {
-            Log.d("MopidyRepository", "Track cache is empty. Fetching from server...")
+        // Step 2: If the cache is empty or expired, fetch from the server and populate it.
+        if (cachedTracks.isEmpty() || isTrackCacheExpired()) {
+            Log.d("MopidyRepository", "Track cache is empty or expired. Fetching from server...")
             cacheAllTracksFromServer()
-            // After caching, query the database again.
             cachedTracks = dao.getAllCachedTracks()
         } else {
             Log.d("MopidyRepository", "Loaded ${cachedTracks.size} tracks from local cache.")
@@ -103,8 +154,8 @@ class MopidyRepository(
         Log.d("MopidyRepository", "Track refresh complete.")
     }
 
-    @Query("DELETE FROM tracks") // This is the SQL command to delete all rows
-    suspend fun deleteAllTracks() {
+    private suspend fun deleteAllTracks() {
+        dao.deleteAllTracks()
     }
 
     suspend fun cacheAllTracksFromServer() {
@@ -148,6 +199,7 @@ class MopidyRepository(
         // Step 4: Save the parsed tracks to the database
         if (tracksToCache.isNotEmpty()) {
             dao.insertAllTracks(tracksToCache)
+            updateTrackCacheTimestamp()
             Log.d("MopidyRepository", "Successfully cached ${tracksToCache.size} tracks.")
         }
     }
@@ -175,6 +227,25 @@ class MopidyRepository(
         val params = buildJsonObject { put("uris", buildJsonArray { add(JsonPrimitive(trackUri)) }) }
         rpc.call("core.tracklist.add", params)
     }
+
+    suspend fun getTracklistLength(): Int? {
+        val result = rpc.call("core.tracklist.get_length")
+        return result?.jsonPrimitive?.intOrNull
+    }
+
+    suspend fun getCurrentTrackTlid(): Int? {
+        val result = rpc.call("core.playback.get_current_tl_track")
+        return result?.jsonObject?.get("tlid")?.jsonPrimitive?.intOrNull
+    }
+
+    suspend fun getTracklistTracks(): List<JsonObject> {
+        val result = rpc.call("core.tracklist.get_tl_tracks")
+        if (result !is JsonArray) return emptyList()
+        return result.mapNotNull {
+            it.jsonObject?.get("track")?.jsonObject
+        }
+    }
+
     suspend fun getPlaylists(): List<JsonObject> {
         val result = rpc.call("core.playlists.as_list")
         return result?.jsonArray?.mapNotNull { it.jsonObject } ?: emptyList()
@@ -207,34 +278,92 @@ class MopidyRepository(
         return rpc.call("core.library.browse", params)
     }
     suspend fun search(query: Map<String, List<String>>): List<JsonElement> {
-        val params = buildJsonObject { put("query", buildJsonObject { query.forEach { (k, v) -> put(k, buildJsonArray { v.forEach { add(it) } }) } }) }
-        return rpc.call("core.library.search", params)?.jsonArray ?: emptyList()
-    }
+        // Extract search query string (typically from "any" key)
+        val searchQuery = query["any"]?.firstOrNull() ?: return emptyList()
 
-    suspend fun playTracks(tracks: List<JsonObject>) {
-        if (tracks.isEmpty()) return
+        // Search local database
+        val matchedTracks = dao.searchTracks(searchQuery)
 
-        // 1. Update our app's internal queue first. This is crucial.
-        queueManager.setQueue(tracks)
+        // Convert tracks to JsonObject format
+        val trackJsonObjects = matchedTracks.map { track ->
+            buildJsonObject {
+                put("__model__", "Track")
+                put("uri", track.uri)
+                put("name", track.name)
+                put("length", track.length)
+                put("artists", buildJsonArray {
+                    if (!track.artistName.isNullOrBlank()) {
+                        add(buildJsonObject {
+                            put("__model__", "Artist")
+                            put("name", track.artistName)
+                        })
+                    }
+                })
+                if (!track.albumUri.isNullOrBlank() && !track.albumName.isNullOrBlank()) {
+                    put("album", buildJsonObject {
+                        put("__model__", "Album")
+                        put("uri", track.albumUri)
+                        put("name", track.albumName)
+                    })
+                }
+            }
+        }
 
-        // 2. Get the reordered list of URIs from our queue manager.
-        val trackUris = queueManager.queue.value.mapNotNull { it["uri"]?.jsonPrimitive?.contentOrNull }
+        // Extract unique albums from matched tracks
+        val uniqueAlbums = matchedTracks
+            .filter { !it.albumUri.isNullOrBlank() && !it.albumName.isNullOrBlank() }
+            .distinctBy { it.albumUri }
+            .map { track ->
+                buildJsonObject {
+                    put("__model__", "Album")
+                    put("uri", track.albumUri!!)
+                    put("name", track.albumName!!)
+                    put("artists", buildJsonArray {
+                        if (!track.artistName.isNullOrBlank()) {
+                            add(buildJsonObject {
+                                put("__model__", "Artist")
+                                put("name", track.artistName)
+                            })
+                        }
+                    })
+                }
+            }
 
-        // 3. Update Mopidy's tracklist to match our queue.
-//        rpc.call("core.tracklist.clear")
-        rpc.call("core.tracklist.add", buildJsonObject { put("uris", buildJsonArray { trackUris.forEach { add(JsonPrimitive(it)) } }) })
+        // Extract unique artists from matched tracks
+        val uniqueArtists = matchedTracks
+            .mapNotNull { it.artistName }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .map { artistName ->
+                buildJsonObject {
+                    put("__model__", "Artist")
+                    put("name", artistName)
+                }
+            }
 
-        // 4. Tell Mopidy to start playing from the beginning of its new tracklist.
-        rpc.call("core.playback.play")
+        // Build SearchResult object
+        val searchResult = buildJsonObject {
+            put("__model__", "SearchResult")
+            put("uri", "local:search?any=$searchQuery")
+            put("tracks", JsonArray(trackJsonObjects))
+            if (uniqueAlbums.isNotEmpty()) {
+                put("albums", JsonArray(uniqueAlbums))
+            }
+            if (uniqueArtists.isNotEmpty()) {
+                put("artists", JsonArray(uniqueArtists))
+            }
+        }
+
+        return listOf(searchResult)
     }
 
     suspend fun getAlbumImages(albumUri: String): List<String> {
-//        val cacheKey = "album-art|$albumUri"
-//        ArtworkProvider.get(cacheKey)?.let { return listOf(it) }
-//        dao.getArtwork(cacheKey)?.let {
-//            ArtworkProvider.put(cacheKey, it.imageUrl)
-//            return listOf(it.imageUrl)
-//        }
+        val cacheKey = "album-art|$albumUri"
+        ArtworkProvider.get(cacheKey)?.let { return listOf(it) }
+        dao.getArtwork(cacheKey)?.let {
+            ArtworkProvider.put(cacheKey, it.imageUrl)
+            return listOf(it.imageUrl)
+        }
         val params = buildJsonObject { put("uris", JsonArray(listOf(JsonPrimitive(albumUri)))) }
         val res = rpc.call("core.library.get_images", params)
         val imageResultsObject = (res as? JsonObject)?.get(albumUri)
@@ -244,8 +373,8 @@ class MopidyRepository(
             if (imageUri?.startsWith("/") == true) "http://$serverAddress$imageUri" else imageUri
         } ?: emptyList()
         imageUrls.firstOrNull()?.let { foundUrl ->
-//            dao.insertArtwork(ArtworkCacheEntry(cacheKey = cacheKey, imageUrl = foundUrl))
-//            ArtworkProvider.put(cacheKey, foundUrl)
+            dao.insertArtwork(ArtworkCacheEntry(cacheKey = cacheKey, imageUrl = foundUrl))
+            ArtworkProvider.put(cacheKey, foundUrl)
         }
         return imageUrls
     }
@@ -259,20 +388,19 @@ class MopidyRepository(
             return null
         }
 
-//         2. Use the Album URI for the cache key.
-//        val cacheKey = "album-art|$albumUri"
-//
-//        // 3. Check memory cache.
-//        ArtworkProvider.get(cacheKey)?.let { return it }
-//
-//        // 4. Check database cache.
-//        dao.getArtwork(cacheKey)?.let {
-//            ArtworkProvider.put(cacheKey, it.imageUrl)
-//            return it.imageUrl
-//        }
+        // 2. Use the Album URI for the cache key.
+        val cacheKey = "album-art|$albumUri"
+
+        // 3. Check memory cache.
+        ArtworkProvider.get(cacheKey)?.let { return it }
+
+        // 4. Check database cache.
+        dao.getArtwork(cacheKey)?.let {
+            ArtworkProvider.put(cacheKey, it.imageUrl)
+            return it.imageUrl
+        }
 
         // 5. Fetch from server using the correct ALBUM URI.
-        Log.d("ArtworkDebug", "Fetching artwork for album: $albumUri")
         val params = buildJsonObject { put("uris", JsonArray(listOf(JsonPrimitive(albumUri)))) }
         val res = rpc.call("core.library.get_images", params)
 
@@ -285,14 +413,10 @@ class MopidyRepository(
         }?.firstOrNull()
 
         // 6. Cache the result.
-//        if (imageUrl != null) {
-//            Log.d("ArtworkDebug", "Found artwork for $albumUri -> $imageUrl")
-//            dao.insertArtwork(ArtworkCacheEntry(cacheKey = cacheKey, imageUrl = imageUrl))
-//            ArtworkProvider.put(cacheKey, imageUrl)
-//        } else {
-//            Log.w("ArtworkDebug", "Server returned no images for album: $albumUri")
-//        }
-        Log.d("RepoImageURL", "$imageUrl")
+        if (imageUrl != null) {
+            dao.insertArtwork(ArtworkCacheEntry(cacheKey = cacheKey, imageUrl = imageUrl))
+            ArtworkProvider.put(cacheKey, imageUrl)
+        }
         return imageUrl
     }
 
@@ -331,6 +455,8 @@ class MopidyRepository(
     suspend fun logTrackPlay(trackUri: String) {
         if (trackUri.isBlank()) return
         dao.insertPlayHistory(PlayHistoryEntry(uri = trackUri))
+        // Prune entries older than 90 days
+        dao.deletePlayHistoryOlderThan(System.currentTimeMillis() - PLAY_HISTORY_MAX_AGE_MS)
     }
 
     suspend fun getMostPlayedTracks(count: Int = 10): List<JsonObject> {
@@ -388,45 +514,6 @@ class MopidyRepository(
         Log.d("MopidyRepository", "Playing TLID=$tlid")
         return true
     }
-
-
-    suspend fun appendRandomTracksIfNeeded(
-        fetchCount: Int = 20
-    ): Int = appendMutex.withLock {
-
-        val newTracks = getRandomTracks(fetchCount)
-        if (newTracks.isEmpty()) return@withLock 0
-
-        val existingUris = queueManager.queue.value
-            .mapNotNull { it["uri"]?.jsonPrimitive?.contentOrNull }
-            .map { normalizeUri(it) }
-            .toSet()
-
-        val filteredTracks = newTracks.filter {
-            it["uri"]?.jsonPrimitive?.contentOrNull
-                ?.let { normalizeUri(it) } !in existingUris
-        }
-
-        if (filteredTracks.isEmpty()) return@withLock 0
-
-        val newUris = filteredTracks.mapNotNull {
-            it["uri"]?.jsonPrimitive?.contentOrNull
-        }
-
-        rpc.call(
-            "core.tracklist.add",
-            buildJsonObject {
-                put("uris", buildJsonArray {
-                    newUris.forEach { add(it) }
-                })
-            }
-        )
-
-        queueManager.appendToQueue(filteredTracks)
-
-        return@withLock filteredTracks.size
-    }
-
 
 
 }
