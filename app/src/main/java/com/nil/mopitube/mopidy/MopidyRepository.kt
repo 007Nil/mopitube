@@ -242,8 +242,83 @@ class MopidyRepository(
         return rpc.call("core.library.browse", params)
     }
     suspend fun search(query: Map<String, List<String>>): List<JsonElement> {
-        val params = buildJsonObject { put("query", buildJsonObject { query.forEach { (k, v) -> put(k, buildJsonArray { v.forEach { add(it) } }) } }) }
-        return rpc.call("core.library.search", params)?.jsonArray ?: emptyList()
+        // Extract search query string (typically from "any" key)
+        val searchQuery = query["any"]?.firstOrNull() ?: return emptyList()
+
+        // Search local database
+        val matchedTracks = dao.searchTracks(searchQuery)
+
+        // Convert tracks to JsonObject format
+        val trackJsonObjects = matchedTracks.map { track ->
+            buildJsonObject {
+                put("__model__", "Track")
+                put("uri", track.uri)
+                put("name", track.name)
+                put("length", track.length)
+                put("artists", buildJsonArray {
+                    if (!track.artistName.isNullOrBlank()) {
+                        add(buildJsonObject {
+                            put("__model__", "Artist")
+                            put("name", track.artistName)
+                        })
+                    }
+                })
+                if (!track.albumUri.isNullOrBlank() && !track.albumName.isNullOrBlank()) {
+                    put("album", buildJsonObject {
+                        put("__model__", "Album")
+                        put("uri", track.albumUri)
+                        put("name", track.albumName)
+                    })
+                }
+            }
+        }
+
+        // Extract unique albums from matched tracks
+        val uniqueAlbums = matchedTracks
+            .filter { !it.albumUri.isNullOrBlank() && !it.albumName.isNullOrBlank() }
+            .distinctBy { it.albumUri }
+            .map { track ->
+                buildJsonObject {
+                    put("__model__", "Album")
+                    put("uri", track.albumUri!!)
+                    put("name", track.albumName!!)
+                    put("artists", buildJsonArray {
+                        if (!track.artistName.isNullOrBlank()) {
+                            add(buildJsonObject {
+                                put("__model__", "Artist")
+                                put("name", track.artistName)
+                            })
+                        }
+                    })
+                }
+            }
+
+        // Extract unique artists from matched tracks
+        val uniqueArtists = matchedTracks
+            .mapNotNull { it.artistName }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .map { artistName ->
+                buildJsonObject {
+                    put("__model__", "Artist")
+                    put("name", artistName)
+                }
+            }
+
+        // Build SearchResult object
+        val searchResult = buildJsonObject {
+            put("__model__", "SearchResult")
+            put("uri", "local:search?any=$searchQuery")
+            put("tracks", JsonArray(trackJsonObjects))
+            if (uniqueAlbums.isNotEmpty()) {
+                put("albums", JsonArray(uniqueAlbums))
+            }
+            if (uniqueArtists.isNotEmpty()) {
+                put("artists", JsonArray(uniqueArtists))
+            }
+        }
+
+        return listOf(searchResult)
     }
 
     suspend fun getAlbumImages(albumUri: String): List<String> {

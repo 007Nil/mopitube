@@ -48,6 +48,23 @@ interface MopitubeDao {
     @Query("SELECT * FROM tracks")
     suspend fun getAllCachedTracks(): List<Track>
 
+    // ===== NEW: Method to search cached tracks =====
+    @Query("""
+        SELECT * FROM tracks
+        WHERE name LIKE '%' || :query || '%'
+        OR artistName LIKE '%' || :query || '%'
+        OR albumName LIKE '%' || :query || '%'
+        ORDER BY
+            CASE
+                WHEN name LIKE :query || '%' THEN 1
+                WHEN artistName LIKE :query || '%' THEN 2
+                WHEN albumName LIKE :query || '%' THEN 3
+                ELSE 4
+            END,
+            name ASC
+    """)
+    suspend fun searchTracks(query: String): List<Track>
+
     // --- Liked Track Methods (Unchanged) ---
     @Query("SELECT * FROM liked_tracks WHERE uri = :trackUri LIMIT 1")
     suspend fun findLikedTrack(trackUri: String): LikedTrack?
