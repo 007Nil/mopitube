@@ -7,6 +7,9 @@ import com.nil.mopitube.database.LikedTrack
 import com.nil.mopitube.database.MopitubeDatabase // Import the CORRECT database
 import com.nil.mopitube.database.PlayHistoryEntry
 import com.nil.mopitube.database.Track
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
@@ -40,6 +43,16 @@ class MopidyRepository(
     private val prefs = context.getSharedPreferences("mopitube_cache", Context.MODE_PRIVATE)
     private val trackCacheKey = "track_cache_timestamp_$serverAddress"
 
+    // Playback state flows for notification service
+    private val _currentTrack = MutableStateFlow<JsonObject?>(null)
+    val currentTrack: StateFlow<JsonObject?> = _currentTrack.asStateFlow()
+
+    private val _playbackState = MutableStateFlow<String?>(null)
+    val playbackState: StateFlow<String?> = _playbackState.asStateFlow()
+
+    private val _timePosition = MutableStateFlow<Int?>(null)
+    val timePosition: StateFlow<Int?> = _timePosition.asStateFlow()
+
     companion object {
         private const val TRACK_CACHE_TTL_MS = 24 * 60 * 60 * 1000L // 24 hours
         private const val PLAY_HISTORY_MAX_AGE_MS = 90L * 24 * 60 * 60 * 1000 // 90 days
@@ -60,13 +73,36 @@ class MopidyRepository(
 
     // --- All other functions are now guaranteed to work correctly ---
 
-    suspend fun play() = rpc.call("core.playback.play")
-    suspend fun pause() = rpc.call("core.playback.pause")
-    suspend fun next() = rpc.call("core.playback.next")
-    suspend fun previous() = rpc.call("core.playback.previous")
+    suspend fun play() {
+        rpc.call("core.playback.play")
+        updatePlaybackState()
+    }
+
+    suspend fun pause() {
+        rpc.call("core.playback.pause")
+        updatePlaybackState()
+    }
+
+    suspend fun next() {
+        rpc.call("core.playback.next")
+        updatePlaybackState()
+    }
+
+    suspend fun previous() {
+        rpc.call("core.playback.previous")
+        updatePlaybackState()
+    }
+
     suspend fun getCurrentTrack(): JsonObject? = rpc.call("core.playback.get_current_track") as? JsonObject
     suspend fun getPlaybackState(): String? = rpc.call("core.playback.get_state")?.jsonPrimitive?.contentOrNull
     suspend fun getTimePosition(): Int? = rpc.call("core.playback.get_time_position")?.jsonPrimitive?.intOrNull
+
+    // Update all playback state flows (called by PlayerScreen polling and by playback actions)
+    suspend fun updatePlaybackState() {
+        _currentTrack.value = getCurrentTrack()
+        _playbackState.value = getPlaybackState()
+        _timePosition.value = getTimePosition()
+    }
     suspend fun seek(ms: Int) {
         val params = buildJsonObject { put("time_position", JsonPrimitive(ms)) }
         rpc.call("core.playback.seek", params)

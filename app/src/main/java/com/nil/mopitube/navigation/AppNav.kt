@@ -1,5 +1,7 @@
 package com.nil.mopitube.navigation
 
+import android.content.Intent
+import android.os.Build
 import android.util.Log
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
@@ -12,6 +14,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavType
@@ -20,6 +23,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.nil.mopitube.PlaybackService
 import com.nil.mopitube.mopidy.ConnectionState
 import com.nil.mopitube.ui.components.AppDrawer
 import com.nil.mopitube.ui.screens.*
@@ -27,6 +31,7 @@ import com.nil.mopitube.ui.screens.settings.ClientSettingsScreen
 import com.nil.mopitube.ui.screens.settings.ServerSettingsScreen
 import com.nil.mopitube.ui.screens.settings.SettingsScreen
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
@@ -49,6 +54,7 @@ data class BottomNavItem(
 fun AppNav(
     appNavViewModel: AppNavViewModel = viewModel()
 ) {
+    val context = LocalContext.current
     val navController = rememberNavController()
     val scope = rememberCoroutineScope()
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
@@ -78,12 +84,19 @@ fun AppNav(
                 }
                 appNavViewModel.hasNavigatedFromStartup = true
             }
-            // Connection lost after we've been using the app → go back to reconnect screen
+            // Connection lost after we've been using the app → wait before showing reconnect screen
+            // This grace period allows automatic reconnection to succeed (e.g., app foregrounding)
+            // without incorrectly navigating to reconnect screen during normal backgrounding
             connectionState is ConnectionState.Disconnected && appNavViewModel.hasNavigatedFromStartup -> {
-                appNavViewModel.hasNavigatedFromStartup = false
-                navController.navigate("reconnect") {
-                    popUpTo(navController.graph.findStartDestination().id) {
-                        inclusive = true
+                // Wait 5 seconds to give reconnection logic time to succeed
+                delay(5000)
+                // Only navigate to reconnect if still disconnected after grace period
+                if (connectionState is ConnectionState.Disconnected) {
+                    appNavViewModel.hasNavigatedFromStartup = false
+                    navController.navigate("reconnect") {
+                        popUpTo(navController.graph.findStartDestination().id) {
+                            inclusive = true
+                        }
                     }
                 }
             }
@@ -260,6 +273,15 @@ fun AppNav(
                                 // Start playback
                                 repo.play()
                                 withContext(Dispatchers.IO) { repo.logTrackPlay(trackUri) }
+
+                                // Start PlaybackService
+                                val serviceIntent = Intent(context, PlaybackService::class.java)
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                    context.startForegroundService(serviceIntent)
+                                } else {
+                                    context.startService(serviceIntent)
+                                }
+
                                 navController.navigate("player")
                             } catch (e: Exception) {
                                 Log.e("AppNav", "Failed to play track", e)

@@ -108,6 +108,12 @@ fun PlayerScreen(
                     positionMs = repo.getTimePosition()
                 }
                 durationMs = currentTrack?.get("length")?.jsonPrimitive?.intOrNull ?: 0
+
+                // Update playback state flows for PlaybackService notification
+                withContext(Dispatchers.IO) {
+                    repo.updatePlaybackState()
+                }
+
                 delay(250)
             }
         }
