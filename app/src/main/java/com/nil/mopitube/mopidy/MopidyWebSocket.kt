@@ -104,6 +104,16 @@ class MopidyWebSocket(
         _connectionState.value = ConnectionState.Disconnected("Client shut down")
     }
 
+    fun resetAndReconnect() {
+        reconnectJob?.cancel()
+        reconnectJob = null
+
+        if (_connectionState.value is ConnectionState.Connected ||
+            _connectionState.value is ConnectionState.Connecting) return
+
+        connect()
+    }
+
     private fun scheduleReconnect() {
         if (reconnectJob?.isActive == true) return
 

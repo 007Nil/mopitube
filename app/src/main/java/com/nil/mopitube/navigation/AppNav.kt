@@ -12,6 +12,9 @@ import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -73,6 +76,23 @@ fun AppNav(
     // Watch connection state and navigate between startup/reconnect and home based on connection status
     val connectionState by client.connectionState.collectAsState()
 
+    // When the app returns to foreground, immediately attempt reconnection
+    // instead of waiting for the exponential backoff timer (which could be 30s+)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                if (client.connectionState.value is ConnectionState.Disconnected) {
+                    client.retryConnection()
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
     LaunchedEffect(connectionState) {
         when {
             // Successfully connected and haven't navigated yet → go to home
@@ -90,8 +110,8 @@ fun AppNav(
             connectionState is ConnectionState.Disconnected && appNavViewModel.hasNavigatedFromStartup -> {
                 // Wait 5 seconds to give reconnection logic time to succeed
                 delay(5000)
-                // Only navigate to reconnect if still disconnected after grace period
-                if (connectionState is ConnectionState.Disconnected) {
+                // Check the LIVE state from the StateFlow, not the captured snapshot
+                if (client.connectionState.value is ConnectionState.Disconnected) {
                     appNavViewModel.hasNavigatedFromStartup = false
                     navController.navigate("reconnect") {
                         popUpTo(navController.graph.findStartDestination().id) {

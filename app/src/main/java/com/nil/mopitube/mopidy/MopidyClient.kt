@@ -58,10 +58,7 @@ class MopidyClient(private val context: Context) {
     }
 
     fun retryConnection() {
-        scope.launch {
-            _connectionState.emit(ConnectionState.Connecting)
-            webSocket?.connect()
-        }
+        webSocket?.resetAndReconnect()
     }
 
     fun shutdown() {
