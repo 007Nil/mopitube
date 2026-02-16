@@ -246,6 +246,46 @@ class MopidyRepository(
         }
     }
 
+    suspend fun getTracklistTracksWithTlid(): List<Pair<Int, JsonObject>> {
+        val result = rpc.call("core.tracklist.get_tl_tracks")
+        if (result !is JsonArray) return emptyList()
+        return result.mapNotNull { tlTrack ->
+            val tlid = tlTrack.jsonObject?.get("tlid")?.jsonPrimitive?.intOrNull
+            val track = tlTrack.jsonObject?.get("track")?.jsonObject
+            if (tlid != null && track != null) tlid to track else null
+        }
+    }
+
+    suspend fun removeTrackFromTracklist(tlid: Int): Boolean {
+        return try {
+            val params = buildJsonObject {
+                put("criteria", buildJsonObject {
+                    put("tlid", buildJsonArray { add(JsonPrimitive(tlid)) })
+                })
+            }
+            val result = rpc.call("core.tracklist.remove", params)
+            result?.jsonArray?.isNotEmpty() == true
+        } catch (e: Exception) {
+            Log.e("MopidyRepository", "Failed to remove track with tlid=$tlid", e)
+            false
+        }
+    }
+
+    suspend fun appendRandomTracksToQueue(count: Int, existingUris: Set<String>): Int {
+        val randomTracks = getRandomTracks(count)
+        val newTracks = randomTracks.filter {
+            it["uri"]?.jsonPrimitive?.contentOrNull !in existingUris
+        }
+        if (newTracks.isEmpty()) return 0
+
+        val trackUris = newTracks.mapNotNull { it["uri"]?.jsonPrimitive?.contentOrNull }
+        val params = buildJsonObject {
+            put("uris", buildJsonArray { trackUris.forEach { add(JsonPrimitive(it)) } })
+        }
+        rpc.call("core.tracklist.add", params)
+        return newTracks.size
+    }
+
     suspend fun getPlaylists(): List<JsonObject> {
         val result = rpc.call("core.playlists.as_list")
         return result?.jsonArray?.mapNotNull { it.jsonObject } ?: emptyList()
