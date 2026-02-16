@@ -2,11 +2,15 @@ package com.nil.mopitube.ui.screens
 
 import android.annotation.SuppressLint
 import android.util.Log
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -20,15 +24,18 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-//import androidx.preference.isNotEmpty
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.nil.mopitube.mopidy.MopidyClient
@@ -41,6 +48,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
+import kotlin.math.abs
+import kotlin.math.roundToInt
+import kotlin.math.sin
 
 @SuppressLint("UnusedBoxWithConstraintsScope")
 @OptIn(ExperimentalMaterial3Api::class)
@@ -60,9 +70,12 @@ fun PlayerScreen(
     }
     val scope = rememberCoroutineScope()
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    var queue by remember { mutableStateOf<List<JsonObject>>(emptyList()) }
+    var queue by remember { mutableStateOf<List<Pair<Int, JsonObject>>>(emptyList()) }
     var tracklistLength by remember { mutableStateOf(0) }
     var currentPosition by remember { mutableStateOf(-1) }
+    var artworkCache by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
+    var isRemovalInProgress by remember { mutableStateOf(false) }
+    val snackbarHostState = remember { SnackbarHostState() }
 
     var currentTrack by remember { mutableStateOf<JsonObject?>(null) }
     var artworkUrl by remember { mutableStateOf<String?>(null) }
@@ -125,16 +138,32 @@ fun PlayerScreen(
             while (true) {
                 withContext(Dispatchers.IO) {
                     try {
-                        // Fetch current tracklist from Mopidy
-                        val tracklistTracks = repo.getTracklistTracks()
-                        queue = tracklistTracks
-                        tracklistLength = tracklistTracks.size
+                        // Fetch current tracklist from Mopidy with tlid
+                        val tracklistTracksWithTlid = repo.getTracklistTracksWithTlid()
+                        queue = tracklistTracksWithTlid
+                        tracklistLength = tracklistTracksWithTlid.size
+
+                        // Batch prefetch artwork for all unique albums
+                        val uniqueAlbumUris = tracklistTracksWithTlid
+                            .map { it.second } // Extract track objects
+                            .mapNotNull { it["album"]?.jsonObject?.get("uri")?.jsonPrimitive?.contentOrNull }
+                            .distinct()
+
+                        val newArtworkCache = mutableMapOf<String, String?>()
+                        uniqueAlbumUris.forEach { albumUri ->
+                            // Reuse existing cache or fetch new
+                            newArtworkCache[albumUri] = artworkCache[albumUri]
+                                ?: repo.findArtwork(tracklistTracksWithTlid.first {
+                                    it.second["album"]?.jsonObject?.get("uri")?.jsonPrimitive?.contentOrNull == albumUri
+                                }.second)
+                        }
+                        artworkCache = newArtworkCache
 
                         // Find current track position by URI matching
                         val currentUri = currentTrack?.get("uri")?.jsonPrimitive?.contentOrNull
                         if (currentUri != null) {
-                            currentPosition = tracklistTracks.indexOfFirst {
-                                it["uri"]?.jsonPrimitive?.contentOrNull == currentUri
+                            currentPosition = tracklistTracksWithTlid.indexOfFirst {
+                                it.second["uri"]?.jsonPrimitive?.contentOrNull == currentUri
                             }
 
                             // Auto-append when reaching last 3 tracks
@@ -143,33 +172,14 @@ fun PlayerScreen(
                                 if (remaining <= 3) {
                                     Log.d("PlayerScreen", "Queue low ($remaining remaining). Appending more tracks")
 
-                                    // Fetch 20 random tracks
-                                    val randomTracks = repo.getRandomTracks(20)
-
                                     // Get existing URIs to filter duplicates
-                                    val existingUris = tracklistTracks.mapNotNull {
-                                        it["uri"]?.jsonPrimitive?.contentOrNull
-                                    }.toSet()
+                                    val existingUris = tracklistTracksWithTlid
+                                        .map { it.second["uri"]?.jsonPrimitive?.contentOrNull }
+                                        .filterNotNull()
+                                        .toSet()
 
-                                    // Filter out duplicates
-                                    val newTracks = randomTracks.filter {
-                                        val uri = it["uri"]?.jsonPrimitive?.contentOrNull
-                                        uri != null && uri !in existingUris
-                                    }
-
-                                    // Append unique tracks via RPC
-                                    if (newTracks.isNotEmpty()) {
-                                        val trackUris = newTracks.mapNotNull {
-                                            it["uri"]?.jsonPrimitive?.contentOrNull
-                                        }
-                                        val params = buildJsonObject {
-                                            put("uris", buildJsonArray {
-                                                trackUris.forEach { add(JsonPrimitive(it)) }
-                                            })
-                                        }
-                                        repo.rpc.call("core.tracklist.add", params)
-                                        Log.d("PlayerScreen", "Appended ${newTracks.size} new tracks")
-                                    }
+                                    val appendedCount = repo.appendRandomTracksToQueue(20, existingUris)
+                                    Log.d("PlayerScreen", "Appended $appendedCount new tracks")
                                 }
                             }
                         }
@@ -197,8 +207,44 @@ fun PlayerScreen(
         }
     }
 
+    // Handle queue item removal
+    val handleRemoveTrack: (Int) -> Unit = { tlid ->
+        scope.launch {
+            if (isRemovalInProgress) return@launch
+            isRemovalInProgress = true
+
+            try {
+                withContext(Dispatchers.IO) {
+                    // Remove track from Mopidy tracklist
+                    val success = repo.removeTrackFromTracklist(tlid)
+
+                    if (success) {
+                        // Auto-refill with 10 new tracks
+                        val existingUris = queue
+                            .map { it.second["uri"]?.jsonPrimitive?.contentOrNull }
+                            .filterNotNull()
+                            .toSet()
+
+                        val appendedCount = repo.appendRandomTracksToQueue(10, existingUris)
+                        Log.d("PlayerScreen", "Removed track $tlid, appended $appendedCount tracks")
+                    } else {
+                        withContext(Dispatchers.Main) {
+                            snackbarHostState.showSnackbar("Failed to remove track")
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("PlayerScreen", "Error removing track", e)
+                snackbarHostState.showSnackbar("Failed to remove track")
+            } finally {
+                isRemovalInProgress = false
+            }
+        }
+    }
+
     // The main player UI
-    Column(
+    Box {
+        Column(
         Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState()),
@@ -367,102 +413,247 @@ fun PlayerScreen(
                     0 -> UpNextQueue(
                         queue = queue,
                         currentTrack = currentTrack,
+                        artworkCache = artworkCache,
+                        repo = repo,
+                        isRemovalInProgress = isRemovalInProgress,
+                        onRemove = handleRemoveTrack,
                         onTrackClick = { clickedUri ->
                             scope.launch {
-                                repo.playTrackFromTracklist(clickedUri)
+                                withContext(Dispatchers.IO) {
+                                    repo.playTrackFromTracklist(clickedUri)
+                                }
                                 // Optionally hide the sheet after a selection
 //                                 sheetState.hide()
 //                                 showBottomSheet = false
                             }
-                        },
-                        repo = repo
+                        }
                     )
                     1 -> LyricsScreen(currentTrack = currentTrack, repo = repo)
                 }
             }
         }
     }
+
+        // SnackbarHost for error messages
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
+    }
 }
 
 @Composable
 fun UpNextQueueItem(
-    trackInQueue: JsonObject,
+    tlid: Int,
+    track: JsonObject,
     isCurrent: Boolean,
-    repo: MopidyRepository,
+    artworkUrl: String?,
+    onRemove: (Int) -> Unit,
     onClick: () -> Unit
 ) {
-    var artworkUrl by remember { mutableStateOf<String?>(null) }
-    val trackName = trackInQueue["name"]?.jsonPrimitive?.contentOrNull ?: "Unknown"
-    val artistName = trackInQueue["artists"]?.jsonArray?.firstOrNull()?.jsonObject?.get("name")?.jsonPrimitive?.contentOrNull ?: "Unknown Artist"
+    val density = LocalDensity.current
+    val swipeThresholdPx = with(density) { 150.dp.toPx() }
 
-    // Fetch artwork for each track individually
-    LaunchedEffect(trackInQueue) {
-        artworkUrl = withContext(Dispatchers.IO) {
-            repo.findArtwork(trackInQueue)
+    var offsetX by remember { mutableStateOf(0f) }
+    var isSwipeTriggered by remember { mutableStateOf(false) }
+
+    val trackName = track["name"]?.jsonPrimitive?.contentOrNull ?: "Unknown"
+    val artistName = track["artists"]?.jsonArray?.firstOrNull()
+        ?.jsonObject?.get("name")?.jsonPrimitive?.contentOrNull ?: "Unknown Artist"
+
+    // Spring-back animation when swipe cancelled
+    LaunchedEffect(isSwipeTriggered) {
+        if (!isSwipeTriggered && offsetX != 0f) {
+            animate(
+                initialValue = offsetX,
+                targetValue = 0f,
+                animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
+            ) { value, _ -> offsetX = value }
         }
     }
 
-    ListItem(
-        modifier = Modifier.clickable(onClick = onClick),
-        headlineContent = {
-            Text(
-                text = trackName,
-                fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
-                color = if (isCurrent) MaterialTheme.colorScheme.primary else Color.Unspecified
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                if (abs(offsetX) > swipeThresholdPx / 2) {
+                    MaterialTheme.colorScheme.error.copy(alpha = 0.3f)
+                } else {
+                    Color.Transparent
+                }
             )
-        },
-        supportingContent = { Text(artistName) },
-        leadingContent = {
-            AsyncImage(
-                model = ImageRequest.Builder(LocalContext.current)
-                    .data(artworkUrl)
-                    .crossfade(true)
-//                    .placeholder(R.drawable.ic_album) // Optional: Add a placeholder drawable
-//                    .error(R.drawable.ic_album)       // Optional: Add an error drawable
-                    .build(),
-                contentDescription = "Album art for $trackName",
-                contentScale = ContentScale.Crop,
+    ) {
+        // Delete icon background
+        if (abs(offsetX) > 50f) {
+            Icon(
+                imageVector = Icons.Default.Delete,
+                contentDescription = "Delete",
+                tint = MaterialTheme.colorScheme.error,
                 modifier = Modifier
-                    .size(40.dp)
-                    .clip(MaterialTheme.shapes.small)
+                    .align(if (offsetX > 0) Alignment.CenterStart else Alignment.CenterEnd)
+                    .padding(horizontal = 32.dp)
+                    .alpha((abs(offsetX) / swipeThresholdPx).coerceIn(0f, 1f))
             )
         }
-    )
+
+        ListItem(
+            modifier = Modifier
+                .offset { IntOffset(offsetX.roundToInt(), 0) }
+                .background(
+                    if (isCurrent) {
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.15f)
+                    } else {
+                        MaterialTheme.colorScheme.surface
+                    }
+                )
+                .pointerInput(Unit) {
+                    detectHorizontalDragGestures(
+                        onDragEnd = {
+                            if (abs(offsetX) > swipeThresholdPx) {
+                                isSwipeTriggered = true
+                                onRemove(tlid)
+                            } else {
+                                isSwipeTriggered = false
+                            }
+                        },
+                        onDragCancel = {
+                            isSwipeTriggered = false
+                        },
+                        onHorizontalDrag = { _, dragAmount ->
+                            offsetX += dragAmount
+                        }
+                    )
+                }
+                .clickable(onClick = onClick),
+            headlineContent = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (isCurrent) {
+                        Icon(
+                            imageVector = Icons.Default.PlayArrow,
+                            contentDescription = "Now Playing",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .size(20.dp)
+                                .graphicsLayer {
+                                    // Subtle pulse animation
+                                    scaleX = 1f + (sin(System.currentTimeMillis() / 500.0) * 0.1).toFloat()
+                                    scaleY = 1f + (sin(System.currentTimeMillis() / 500.0) * 0.1).toFloat()
+                                }
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                    }
+                    Text(
+                        text = trackName,
+                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                        color = if (isCurrent) MaterialTheme.colorScheme.primary else Color.Unspecified
+                    )
+                }
+            },
+            supportingContent = { Text(artistName) },
+            leadingContent = {
+                Box {
+                    AsyncImage(
+                        model = ImageRequest.Builder(LocalContext.current)
+                            .data(artworkUrl)
+                            .crossfade(true)
+                            .build(),
+                        contentDescription = "Album art",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(MaterialTheme.shapes.small)
+                    )
+                    // Visual indicator border for current track
+                    if (isCurrent) {
+                        Box(
+                            modifier = Modifier
+                                .matchParentSize()
+                                .border(
+                                    width = 2.dp,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    shape = MaterialTheme.shapes.small
+                                )
+                        )
+                    }
+                }
+            }
+        )
+    }
 }
 
 @Composable
 fun UpNextQueue(
-    queue: List<JsonObject>,
+    queue: List<Pair<Int, JsonObject>>,
     currentTrack: JsonObject?,
+    artworkCache: Map<String, String?>,
     repo: MopidyRepository,
+    isRemovalInProgress: Boolean,
+    onRemove: (Int) -> Unit,
     onTrackClick: (String) -> Unit
 ) {
-    LazyColumn(modifier = Modifier.padding(bottom = 16.dp)) {
-
-        items(queue) { trackInQueue ->
-
-            val trackUri = trackInQueue["uri"]
-                ?.jsonPrimitive
-                ?.contentOrNull
-
-            val currentUri = currentTrack
-                ?.get("uri")
-                ?.jsonPrimitive
-                ?.contentOrNull
-
-            val isPlayingNow = trackUri == currentUri
-
-            UpNextQueueItem(
-                trackInQueue = trackInQueue,
-                isCurrent = isPlayingNow,
-                repo = repo,
-                onClick = {
-                    trackUri?.let {
-                        onTrackClick(it)
-                        Log.d("PlayerScreen", "Clicked on track: $it")
-                    }
-                }
+    if (queue.isEmpty()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(32.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "Queue is empty",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+    } else {
+        val listState = rememberLazyListState()
+        val currentUri = currentTrack?.get("uri")?.jsonPrimitive?.contentOrNull
+
+        // Auto-scroll to currently playing track when queue or current track changes
+        LaunchedEffect(queue, currentUri) {
+            if (currentUri != null) {
+                val currentIndex = queue.indexOfFirst { (_, track) ->
+                    track["uri"]?.jsonPrimitive?.contentOrNull == currentUri
+                }
+                if (currentIndex >= 0) {
+                    // Scroll to position with some offset to center it
+                    listState.animateScrollToItem(
+                        index = currentIndex,
+                        scrollOffset = -100 // Small offset to show item near top but not at edge
+                    )
+                }
+            }
+        }
+
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.padding(bottom = 16.dp)
+        ) {
+            items(
+                items = queue,
+                key = { it.first } // Use tlid as key for stable identity
+            ) { (tlid, track) ->
+                val trackUri = track["uri"]?.jsonPrimitive?.contentOrNull
+                val currentUri = currentTrack?.get("uri")?.jsonPrimitive?.contentOrNull
+                val isPlayingNow = trackUri == currentUri
+
+                // Get artwork from cache
+                val albumUri = track["album"]?.jsonObject?.get("uri")?.jsonPrimitive?.contentOrNull
+                val artwork = albumUri?.let { artworkCache[it] }
+
+                UpNextQueueItem(
+                    tlid = tlid,
+                    track = track,
+                    isCurrent = isPlayingNow,
+                    artworkUrl = artwork,
+                    onRemove = if (isRemovalInProgress) { _ -> } else onRemove,
+                    onClick = {
+                        trackUri?.let {
+                            onTrackClick(it)
+                            Log.d("PlayerScreen", "Clicked on track: $it")
+                        }
+                    }
+                )
+            }
         }
     }
 }
