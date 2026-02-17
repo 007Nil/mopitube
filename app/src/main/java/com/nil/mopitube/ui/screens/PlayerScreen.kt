@@ -3,6 +3,11 @@ package com.nil.mopitube.ui.screens
 import android.annotation.SuppressLint
 import android.util.Log
 import androidx.compose.animation.core.*
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -75,6 +80,7 @@ fun PlayerScreen(
     var currentPosition by remember { mutableStateOf(-1) }
     var artworkCache by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
     var isRemovalInProgress by remember { mutableStateOf(false) }
+    var isAppendingTracks by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     var currentTrack by remember { mutableStateOf<JsonObject?>(null) }
@@ -166,20 +172,28 @@ fun PlayerScreen(
                                 it.second["uri"]?.jsonPrimitive?.contentOrNull == currentUri
                             }
 
-                            // Auto-append when reaching last 3 tracks
-                            if (currentPosition != -1 && tracklistLength > 0) {
+                            // Auto-append when reaching last 3 tracks (with queue cap at 100 items)
+                            if (currentPosition != -1 && tracklistLength > 0 && !isAppendingTracks) {
                                 val remaining = tracklistLength - currentPosition - 1
-                                if (remaining <= 3) {
-                                    Log.d("PlayerScreen", "Queue low ($remaining remaining). Appending more tracks")
+                                // Only append if queue is low AND below the 100-item cap
+                                if (remaining <= 3 && tracklistLength < 100) {
+                                    isAppendingTracks = true
+                                    try {
+                                        Log.d("PlayerScreen", "Queue low ($remaining remaining, $tracklistLength total). Appending more tracks")
 
-                                    // Get existing URIs to filter duplicates
-                                    val existingUris = tracklistTracksWithTlid
-                                        .map { it.second["uri"]?.jsonPrimitive?.contentOrNull }
-                                        .filterNotNull()
-                                        .toSet()
+                                        // Get existing URIs to filter duplicates
+                                        val existingUris = tracklistTracksWithTlid
+                                            .map { it.second["uri"]?.jsonPrimitive?.contentOrNull }
+                                            .filterNotNull()
+                                            .toSet()
 
-                                    val appendedCount = repo.appendRandomTracksToQueue(20, existingUris)
-                                    Log.d("PlayerScreen", "Appended $appendedCount new tracks")
+                                        // Calculate how many tracks to append (don't exceed cap)
+                                        val maxToAppend = (100 - tracklistLength).coerceAtMost(20)
+                                        val appendedCount = repo.appendRandomTracksToQueue(maxToAppend, existingUris)
+                                        Log.d("PlayerScreen", "Appended $appendedCount new tracks (queue now at ${tracklistLength + appendedCount})")
+                                    } finally {
+                                        isAppendingTracks = false
+                                    }
                                 }
                             }
                         }
@@ -461,6 +475,18 @@ fun UpNextQueueItem(
     val artistName = track["artists"]?.jsonArray?.firstOrNull()
         ?.jsonObject?.get("name")?.jsonPrimitive?.contentOrNull ?: "Unknown Artist"
 
+    // Pulse animation for play icon (only when current track is playing)
+    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+    val pulseScale by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 500, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseScale"
+    )
+
     // Spring-back animation when swipe cancelled
     LaunchedEffect(isSwipeTriggered) {
         if (!isSwipeTriggered && offsetX != 0f) {
@@ -535,9 +561,9 @@ fun UpNextQueueItem(
                             modifier = Modifier
                                 .size(20.dp)
                                 .graphicsLayer {
-                                    // Subtle pulse animation
-                                    scaleX = 1f + (sin(System.currentTimeMillis() / 500.0) * 0.1).toFloat()
-                                    scaleY = 1f + (sin(System.currentTimeMillis() / 500.0) * 0.1).toFloat()
+                                    // Subtle pulse animation using rememberInfiniteTransition
+                                    scaleX = pulseScale
+                                    scaleY = pulseScale
                                 }
                         )
                         Spacer(modifier = Modifier.width(8.dp))
@@ -608,8 +634,9 @@ fun UpNextQueue(
         val listState = rememberLazyListState()
         val currentUri = currentTrack?.get("uri")?.jsonPrimitive?.contentOrNull
 
-        // Auto-scroll to currently playing track when queue or current track changes
-        LaunchedEffect(queue, currentUri) {
+        // Auto-scroll to currently playing track only when the current track changes
+        // Do NOT depend on queue to avoid interrupting manual scrolling
+        LaunchedEffect(currentUri) {
             if (currentUri != null) {
                 val currentIndex = queue.indexOfFirst { (_, track) ->
                     track["uri"]?.jsonPrimitive?.contentOrNull == currentUri

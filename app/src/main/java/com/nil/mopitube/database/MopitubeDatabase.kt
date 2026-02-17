@@ -2,6 +2,8 @@ package com.nil.mopitube.database
 
 import android.content.Context
 import androidx.room.*
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 
 // --- Table 1: Artwork Cache (Unchanged) ---
 @Entity(tableName = "artwork_cache")
@@ -115,6 +117,43 @@ abstract class MopitubeDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: MopitubeDatabase? = null
 
+        // Migration from version 1 to 2 (if version 1 existed with just artwork_cache and liked_tracks)
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Version 1->2: No schema changes, just version bump
+                // (Version 1 likely had artwork_cache and liked_tracks)
+            }
+        }
+
+        // Migration from version 2 to 3: Add play_history table
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS play_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        uri TEXT NOT NULL,
+                        timestamp INTEGER NOT NULL
+                    )
+                """)
+            }
+        }
+
+        // Migration from version 3 to 4: Add tracks table
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS tracks (
+                        uri TEXT PRIMARY KEY NOT NULL,
+                        name TEXT NOT NULL,
+                        artistName TEXT,
+                        albumName TEXT,
+                        albumUri TEXT,
+                        length INTEGER
+                    )
+                """)
+            }
+        }
+
         fun getDatabase(context: Context): MopitubeDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -122,7 +161,8 @@ abstract class MopitubeDatabase : RoomDatabase() {
                     MopitubeDatabase::class.java,
                     "mopitube_app.db"
                 )
-                    .fallbackToDestructiveMigration()
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .fallbackToDestructiveMigration() // Only as last resort for unknown versions
                     .build()
                 INSTANCE = instance
                 instance
