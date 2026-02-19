@@ -7,11 +7,14 @@ import com.nil.mopitube.database.LikedTrack
 import com.nil.mopitube.database.MopitubeDatabase // Import the CORRECT database
 import com.nil.mopitube.database.PlayHistoryEntry
 import com.nil.mopitube.database.Track
+import com.nil.mopitube.utils.FuzzySearch
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
 import kotlinx.serialization.json.add
 import java.net.URLDecoder
@@ -318,11 +321,28 @@ class MopidyRepository(
         return rpc.call("core.library.browse", params)
     }
     suspend fun search(query: Map<String, List<String>>): List<JsonElement> {
-        // Extract search query string (typically from "any" key)
         val searchQuery = query["any"]?.firstOrNull() ?: return emptyList()
 
-        // Search local database
-        val matchedTracks = dao.searchTracks(searchQuery)
+        // 1. Fast exact/LIKE matches from the database (ranked first)
+        val exactMatches = dao.searchTracks(searchQuery)
+        val exactUris = exactMatches.map { it.uri }.toSet()
+
+        // 2. Fuzzy matches over the full track cache (CPU work → Default dispatcher)
+        val fuzzyThreshold = 0.6f
+        val fuzzyMatches = withContext(Dispatchers.Default) {
+            val allTracks = dao.getAllCachedTracks()
+            allTracks
+                .filter { it.uri !in exactUris }
+                .mapNotNull { track ->
+                    val s = FuzzySearch.bestScore(searchQuery, track.name, track.artistName, track.albumName)
+                    if (s >= fuzzyThreshold) track to s else null
+                }
+                .sortedByDescending { it.second }
+                .map { it.first }
+        }
+
+        // 3. Merge: exact results first, fuzzy after
+        val matchedTracks = exactMatches + fuzzyMatches
 
         // Convert tracks to JsonObject format
         val trackJsonObjects = matchedTracks.map { track ->
