@@ -189,7 +189,7 @@ fun PlayerScreen(
 
                                         // Calculate how many tracks to append (don't exceed cap)
                                         val maxToAppend = (100 - tracklistLength).coerceAtMost(20)
-                                        val appendedCount = repo.appendRandomTracksToQueue(maxToAppend, existingUris)
+                                        val appendedCount = repo.appendSimilarTracksToQueue(maxToAppend, existingUris, currentTrack)
                                         Log.d("PlayerScreen", "Appended $appendedCount new tracks (queue now at ${tracklistLength + appendedCount})")
                                     } finally {
                                         isAppendingTracks = false

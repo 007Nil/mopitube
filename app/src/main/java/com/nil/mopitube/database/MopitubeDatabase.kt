@@ -67,6 +67,14 @@ interface MopitubeDao {
     """)
     suspend fun searchTracks(query: String): List<Track>
 
+    // Smart queue: random tracks with the same genre, excluding already-queued URIs
+    @Query("SELECT * FROM tracks WHERE genre = :genre AND uri NOT IN (:excludeUris) ORDER BY RANDOM() LIMIT :limit")
+    suspend fun getTracksByGenre(genre: String, excludeUris: List<String>, limit: Int): List<Track>
+
+    // Smart queue: random tracks by the same artist, excluding already-queued URIs
+    @Query("SELECT * FROM tracks WHERE artistName = :artistName AND uri NOT IN (:excludeUris) ORDER BY RANDOM() LIMIT :limit")
+    suspend fun getTracksByArtist(artistName: String, excludeUris: List<String>, limit: Int): List<Track>
+
     // --- Liked Track Methods (Unchanged) ---
     @Query("SELECT * FROM liked_tracks WHERE uri = :trackUri LIMIT 1")
     suspend fun findLikedTrack(trackUri: String): LikedTrack?
@@ -109,7 +117,7 @@ interface MopitubeDao {
         LikedTrack::class,
         PlayHistoryEntry::class,
         Track::class
-    ], version = 4)
+    ], version = 5)
 abstract class MopitubeDatabase : RoomDatabase() {
     abstract fun mopitubeDao(): MopitubeDao
 
@@ -138,6 +146,13 @@ abstract class MopitubeDatabase : RoomDatabase() {
             }
         }
 
+        // Migration from version 4 to 5: Add genre column to tracks table
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE tracks ADD COLUMN genre TEXT")
+            }
+        }
+
         // Migration from version 3 to 4: Add tracks table
         private val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -161,7 +176,7 @@ abstract class MopitubeDatabase : RoomDatabase() {
                     MopitubeDatabase::class.java,
                     "mopitube_app.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .fallbackToDestructiveMigration() // Only as last resort for unknown versions
                     .build()
                 INSTANCE = instance

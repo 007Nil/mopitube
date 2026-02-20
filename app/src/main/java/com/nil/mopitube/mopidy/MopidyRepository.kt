@@ -193,7 +193,8 @@ class MopidyRepository(
                     artistName = artistName,
                     albumName = albumName,
                     albumUri = albumUri,
-                    length = trackJson["length"]?.jsonPrimitive?.intOrNull
+                    length = trackJson["length"]?.jsonPrimitive?.intOrNull,
+                    genre = trackJson["genre"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotBlank() }
                 )
             }
             ?.filter { it.uri.isNotBlank() } // Ensure we don't save tracks with an empty URI
@@ -272,6 +273,52 @@ class MopidyRepository(
             Log.e("MopidyRepository", "Failed to remove track with tlid=$tlid", e)
             false
         }
+    }
+
+    suspend fun appendSimilarTracksToQueue(
+        count: Int,
+        existingUris: Set<String>,
+        currentTrack: JsonObject?
+    ): Int {
+        val excludeList = existingUris.toList().ifEmpty { listOf("__none__") }
+
+        // Tier 1: same genre
+        val genre = currentTrack?.get("genre")?.jsonPrimitive?.contentOrNull?.trim()
+        var candidates: List<com.nil.mopitube.database.Track> = emptyList()
+
+        if (!genre.isNullOrBlank()) {
+            candidates = dao.getTracksByGenre(genre, excludeList, count)
+            Log.d("SmartQueue", "Genre '$genre': found ${candidates.size} tracks")
+        }
+
+        // Tier 2: same artist (fills remaining slots)
+        val needed = count - candidates.size
+        if (needed > 0) {
+            val artist = currentTrack
+                ?.get("artists")?.jsonArray
+                ?.firstOrNull()?.jsonObject
+                ?.get("name")?.jsonPrimitive?.contentOrNull
+            if (!artist.isNullOrBlank()) {
+                val alreadyUsed = (existingUris + candidates.map { it.uri })
+                    .toList().ifEmpty { listOf("__none__") }
+                val artistTracks = dao.getTracksByArtist(artist, alreadyUsed, needed)
+                candidates = candidates + artistTracks
+                Log.d("SmartQueue", "Artist '$artist': +${artistTracks.size} tracks")
+            }
+        }
+
+        // Tier 3: random fallback
+        if (candidates.isEmpty()) {
+            Log.d("SmartQueue", "No genre/artist match — falling back to random")
+            return appendRandomTracksToQueue(count, existingUris)
+        }
+
+        val uris = candidates.map { it.uri }
+        val params = buildJsonObject {
+            put("uris", buildJsonArray { uris.forEach { add(JsonPrimitive(it)) } })
+        }
+        rpc.call("core.tracklist.add", params)
+        return candidates.size
     }
 
     suspend fun appendRandomTracksToQueue(count: Int, existingUris: Set<String>): Int {

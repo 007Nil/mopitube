@@ -10,5 +10,6 @@ data class Track(
     val artistName: String?,
     val albumName: String?,
     val albumUri: String?,
-    val length: Int?
+    val length: Int?,
+    val genre: String?
 )
