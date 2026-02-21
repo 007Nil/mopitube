@@ -45,6 +45,7 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.nil.mopitube.mopidy.MopidyClient
 import com.nil.mopitube.mopidy.MopidyRepository
+import com.nil.mopitube.mopidy.TrackRepeatMode
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
@@ -94,6 +95,7 @@ fun PlayerScreen(
     var isLiked by remember { mutableStateOf(false) }
     var volume by remember { mutableStateOf(100) }
     var isVolumeSliderVisible by remember { mutableStateOf(false) }
+    var repeatMode by remember { mutableStateOf(TrackRepeatMode.OFF) }
 
     // State for the bottom sheet content (Up Next vs. Lyrics)
     var selectedTab by remember { mutableStateOf(0) }
@@ -105,11 +107,10 @@ fun PlayerScreen(
 
     // This polling loop fetches track state and time
     LaunchedEffect(repo) {
-        // Fetch initial volume (one-time, before lifecycle-aware loop)
+        // Fetch initial volume and repeat mode (one-time, before lifecycle-aware loop)
         withContext(Dispatchers.IO) {
-            repo.getVolume()?.let {
-                volume = it
-            }
+            repo.getVolume()?.let { volume = it }
+            repeatMode = repo.getRepeatMode()
         }
         delay(250)
         // Only poll when the app is in the foreground
@@ -350,7 +351,23 @@ fun PlayerScreen(
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = { /* Dislike action */ }) { Icon(Icons.Outlined.ThumbDown, "Dislike") }
+                IconButton(onClick = {
+                    scope.launch {
+                        val next = when (repeatMode) {
+                            TrackRepeatMode.OFF -> TrackRepeatMode.ALL
+                            TrackRepeatMode.ALL -> TrackRepeatMode.ONE
+                            TrackRepeatMode.ONE -> TrackRepeatMode.OFF
+                        }
+                        repeatMode = next
+                        withContext(Dispatchers.IO) { repo.setRepeatMode(next) }
+                    }
+                }) {
+                    Icon(
+                        imageVector = if (repeatMode == TrackRepeatMode.ONE) Icons.Filled.RepeatOne else Icons.Filled.Repeat,
+                        contentDescription = "Repeat",
+                        tint = if (repeatMode == TrackRepeatMode.OFF) LocalContentColor.current.copy(alpha = 0.38f) else MaterialTheme.colorScheme.primary
+                    )
+                }
                 IconButton(onClick = { scope.launch { repo.previous() } }) { Icon(Icons.Filled.SkipPrevious, "Previous", modifier = Modifier.size(36.dp)) }
                 IconButton(onClick = { scope.launch { if (isPlaying) repo.pause() else repo.play() } }) { Icon(if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, "Play/Pause", modifier = Modifier.size(48.dp)) }
                 IconButton(onClick = { scope.launch { repo.next() } }) { Icon(Icons.Filled.SkipNext, "Next", modifier = Modifier.size(36.dp)) }

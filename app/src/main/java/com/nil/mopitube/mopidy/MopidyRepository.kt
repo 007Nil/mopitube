@@ -23,6 +23,8 @@ import kotlin.collections.component1
 import kotlin.collections.component2
 import kotlin.math.log
 
+enum class TrackRepeatMode { OFF, ALL, ONE }
+
 // In-memory LRU cache for artwork URLs (max 300 entries).
 private object ArtworkProvider {
     private const val MAX_ENTRIES = 300
@@ -585,6 +587,23 @@ class MopidyRepository(
         val params = buildJsonObject { put("volume", JsonPrimitive(volume)) }
         val result = rpc.call("core.mixer.set_volume", params)
         return result?.jsonPrimitive?.booleanOrNull ?: false
+    }
+
+    suspend fun getRepeatMode(): TrackRepeatMode {
+        val repeat = rpc.call("core.tracklist.get_repeat")?.jsonPrimitive?.booleanOrNull ?: false
+        val single = rpc.call("core.tracklist.get_single")?.jsonPrimitive?.booleanOrNull ?: false
+        return when {
+            repeat && single -> TrackRepeatMode.ONE
+            repeat -> TrackRepeatMode.ALL
+            else -> TrackRepeatMode.OFF
+        }
+    }
+
+    suspend fun setRepeatMode(mode: TrackRepeatMode) {
+        val repeat = mode != TrackRepeatMode.OFF
+        val single = mode == TrackRepeatMode.ONE
+        rpc.call("core.tracklist.set_repeat", buildJsonObject { put("value", JsonPrimitive(repeat)) })
+        rpc.call("core.tracklist.set_single", buildJsonObject { put("value", JsonPrimitive(single)) })
     }
 
     suspend fun playTrackFromTracklist(trackUri: String): Boolean {
