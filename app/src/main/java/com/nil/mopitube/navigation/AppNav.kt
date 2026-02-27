@@ -310,6 +310,18 @@ fun AppNav(
                     }
                 }
                 val onPlayerClick: () -> Unit = { navController.navigate("player") }
+                val onPlayAlbum: (String) -> Unit = { albumUri ->
+                    scope.launch {
+                        client.repo?.let { repo ->
+                            try {
+                                withContext(Dispatchers.IO) { repo.playAlbum(albumUri) }
+                                navController.navigate("player")
+                            } catch (e: Exception) {
+                                Log.e("AppNav", "Failed to play album", e)
+                            }
+                        }
+                    }
+                }
 
                 composable("home") {
                     // Access repo safely. The '!!' is safe because this screen is only
@@ -359,7 +371,8 @@ fun AppNav(
                     client.repo?.let { repo ->
                         AlbumsScreen(
                             repo = repo,
-                            onAlbumClick = { uri -> navController.navigate("album/${URLEncoder.encode(uri, "UTF-8")}") }
+                            onAlbumClick = { uri -> navController.navigate("album/${URLEncoder.encode(uri, "UTF-8")}") },
+                            onPlayAlbum = onPlayAlbum
                         )
                     }
                 }

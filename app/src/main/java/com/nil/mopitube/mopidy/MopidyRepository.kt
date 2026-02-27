@@ -564,6 +564,20 @@ class MopidyRepository(
         return lookupResult?.jsonObject?.values?.flatMap { it.jsonArray }?.mapNotNull { it.jsonObject } ?: emptyList()
     }
 
+    suspend fun playAlbum(albumUri: String) {
+        val result = getAlbumSongs(albumUri)
+        val uris = result?.jsonArray
+            ?.mapNotNull { it.jsonObject?.get("uri")?.jsonPrimitive?.contentOrNull }
+            ?: return
+        if (uris.isEmpty()) return
+        clearTracklist()
+        val params = buildJsonObject {
+            put("uris", buildJsonArray { uris.forEach { add(JsonPrimitive(it)) } })
+        }
+        rpc.call("core.tracklist.add", params)
+        play()
+    }
+
     suspend fun playAll(trackUris: List<String>) {
         if (trackUris.isEmpty()) return
         clearTracklist()
