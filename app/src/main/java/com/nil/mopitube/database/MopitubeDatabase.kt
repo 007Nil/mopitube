@@ -18,6 +18,12 @@ data class LikedTrack(
     @PrimaryKey val uri: String
 )
 
+// --- Table: Disliked Tracks ---
+@Entity(tableName = "disliked_tracks")
+data class DislikedTrack(
+    @PrimaryKey val uri: String
+)
+
 
 // ===== NEW: Table 3: Play History =====
 @Entity(tableName = "play_history")
@@ -88,6 +94,19 @@ interface MopitubeDao {
     @Query("DELETE FROM liked_tracks WHERE uri = :trackUri")
     suspend fun unlikeTrack(trackUri: String)
 
+    // --- Disliked Track Methods ---
+    @Query("SELECT * FROM disliked_tracks WHERE uri = :trackUri LIMIT 1")
+    suspend fun findDislikedTrack(trackUri: String): DislikedTrack?
+
+    @Query("SELECT * FROM disliked_tracks")
+    suspend fun getAllDislikedTracks(): List<DislikedTrack>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun dislikeTrack(track: DislikedTrack)
+
+    @Query("DELETE FROM disliked_tracks WHERE uri = :trackUri")
+    suspend fun undislikeTrack(trackUri: String)
+
     // ===== Track Cache Methods =====
     @Query("DELETE FROM tracks")
     suspend fun deleteAllTracks()
@@ -115,9 +134,10 @@ interface MopitubeDao {
     [
         ArtworkCacheEntry::class,
         LikedTrack::class,
+        DislikedTrack::class,
         PlayHistoryEntry::class,
         Track::class
-    ], version = 5)
+    ], version = 6)
 abstract class MopitubeDatabase : RoomDatabase() {
     abstract fun mopitubeDao(): MopitubeDao
 
@@ -153,6 +173,13 @@ abstract class MopitubeDatabase : RoomDatabase() {
             }
         }
 
+        // Migration from version 5 to 6: Add disliked_tracks table
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS disliked_tracks (uri TEXT NOT NULL, PRIMARY KEY(uri))")
+            }
+        }
+
         // Migration from version 3 to 4: Add tracks table
         private val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -176,7 +203,7 @@ abstract class MopitubeDatabase : RoomDatabase() {
                     MopitubeDatabase::class.java,
                     "mopitube_app.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .fallbackToDestructiveMigration() // Only as last resort for unknown versions
                     .build()
                 INSTANCE = instance

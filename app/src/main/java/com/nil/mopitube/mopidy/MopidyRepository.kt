@@ -3,6 +3,7 @@ package com.nil.mopitube.mopidy
 import android.content.Context
 import android.util.Log
 import com.nil.mopitube.database.ArtworkCacheEntry
+import com.nil.mopitube.database.DislikedTrack
 import com.nil.mopitube.database.LikedTrack
 import com.nil.mopitube.database.MopitubeDatabase // Import the CORRECT database
 import com.nil.mopitube.database.PlayHistoryEntry
@@ -293,7 +294,8 @@ class MopidyRepository(
         existingUris: Set<String>,
         currentTrack: JsonObject?
     ): Int {
-        val excludeList = existingUris.toList().ifEmpty { listOf("__none__") }
+        val dislikedUris = dao.getAllDislikedTracks().map { it.uri }.toSet()
+        val excludeList = (existingUris + dislikedUris).toList().ifEmpty { listOf("__none__") }
 
         // Tier 1: same genre
         val genre = currentTrack?.get("genre")?.jsonPrimitive?.contentOrNull?.trim()
@@ -362,7 +364,9 @@ class MopidyRepository(
         val params = buildJsonObject { put("uri", "local:directory?type=track") }
         val browseResult = rpc.call("core.library.browse", params)
         if (browseResult == null || browseResult !is JsonArray) return emptyList()
+        val dislikedUris = dao.getAllDislikedTracks().map { it.uri }.toSet()
         val allTrackRefs = browseResult.jsonArray.mapNotNull { it.jsonObject }
+            .filter { it["uri"]?.jsonPrimitive?.content !in dislikedUris }
         if (allTrackRefs.isEmpty()) return emptyList()
         val randomTrackUris = allTrackRefs.shuffled().take(count).mapNotNull { it["uri"]?.jsonPrimitive?.content }
         if (randomTrackUris.isEmpty()) return emptyList()
@@ -551,9 +555,34 @@ class MopidyRepository(
             dao.unlikeTrack(trackUri)
             return false
         } else {
+            dao.undislikeTrack(trackUri) // like and dislike are mutually exclusive
             dao.likeTrack(LikedTrack(uri = trackUri))
             return true
         }
+    }
+
+    suspend fun isTrackDisliked(trackUri: String): Boolean {
+        return dao.findDislikedTrack(trackUri) != null
+    }
+
+    suspend fun toggleDislike(trackUri: String): Boolean {
+        val isCurrentlyDisliked = isTrackDisliked(trackUri)
+        if (isCurrentlyDisliked) {
+            dao.undislikeTrack(trackUri)
+            return false
+        } else {
+            dao.unlikeTrack(trackUri) // like and dislike are mutually exclusive
+            dao.dislikeTrack(DislikedTrack(uri = trackUri))
+            return true
+        }
+    }
+
+    suspend fun getDislikedTracks(): List<JsonObject> {
+        val dislikedUris = dao.getAllDislikedTracks().map { it.uri }
+        if (dislikedUris.isEmpty()) return emptyList()
+        val lookupParams = buildJsonObject { put("uris", buildJsonArray { dislikedUris.forEach { add(it) } }) }
+        val lookupResult = rpc.call("core.library.lookup", lookupParams)
+        return lookupResult?.jsonObject?.values?.flatMap { it.jsonArray }?.mapNotNull { it.jsonObject } ?: emptyList()
     }
 
     suspend fun getLikedTracks(): List<JsonObject> {
@@ -594,7 +623,8 @@ class MopidyRepository(
     }
 
     suspend fun getMostPlayedTracks(count: Int = 10): List<JsonObject> {
-        val mostPlayedUris = dao.getMostPlayed(count).map { it.uri }
+        val dislikedUris = dao.getAllDislikedTracks().map { it.uri }.toSet()
+        val mostPlayedUris = dao.getMostPlayed(count).map { it.uri }.filter { it !in dislikedUris }
         if (mostPlayedUris.isEmpty()) return emptyList()
         val lookupParams = buildJsonObject { put("uris", buildJsonArray { mostPlayedUris.forEach { add(it) } }) }
         val lookupResult = rpc.call("core.library.lookup", lookupParams)

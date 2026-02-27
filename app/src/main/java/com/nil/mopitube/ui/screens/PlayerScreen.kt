@@ -93,6 +93,7 @@ fun PlayerScreen(
     var isSeeking by remember { mutableStateOf(false) }
     var pendingSeekPosition by remember { mutableStateOf(0f) }
     var isLiked by remember { mutableStateOf(false) }
+    var isDisliked by remember { mutableStateOf(false) }
     var volume by remember { mutableStateOf(100) }
     var isVolumeSliderVisible by remember { mutableStateOf(false) }
     var repeatMode by remember { mutableStateOf(TrackRepeatMode.OFF) }
@@ -207,16 +208,17 @@ fun PlayerScreen(
         }
     }
 
-    // This effect fetches artwork and like status when the track changes
-    // This effect fetches artwork and like status when the track changes
+    // This effect fetches artwork, like, and dislike status when the track changes
     LaunchedEffect(currentTrack, repo) {
         artworkUrl = null
         isLiked = false
+        isDisliked = false
         val track = currentTrack ?: return@LaunchedEffect
         val trackUri = track["uri"]?.jsonPrimitive?.contentOrNull
         if (!trackUri.isNullOrEmpty()) {
-            isLiked = withContext(Dispatchers.IO) { repo.isTrackLiked(trackUri) }
             withContext(Dispatchers.IO) {
+                isLiked = repo.isTrackLiked(trackUri)
+                isDisliked = repo.isTrackDisliked(trackUri)
                 artworkUrl = repo.findArtwork(track)
             }
         }
@@ -375,10 +377,29 @@ fun PlayerScreen(
                     scope.launch {
                         val trackUri = currentTrack?.get("uri")?.jsonPrimitive?.contentOrNull
                         if (!trackUri.isNullOrEmpty()) {
-                            isLiked = repo.toggleLike(trackUri)
+                            isLiked = withContext(Dispatchers.IO) { repo.toggleLike(trackUri) }
+                            if (isLiked) isDisliked = false
                         }
                     }
                 }) { Icon(imageVector = if (isLiked) Icons.Filled.ThumbUp else Icons.Outlined.ThumbUp, "Like", tint = if (isLiked) MaterialTheme.colorScheme.primary else LocalContentColor.current) }
+                IconButton(onClick = {
+                    scope.launch {
+                        val trackUri = currentTrack?.get("uri")?.jsonPrimitive?.contentOrNull
+                        if (!trackUri.isNullOrEmpty()) {
+                            isDisliked = withContext(Dispatchers.IO) { repo.toggleDislike(trackUri) }
+                            if (isDisliked) {
+                                isLiked = false
+                                repo.next()
+                            }
+                        }
+                    }
+                }) {
+                    Icon(
+                        imageVector = if (isDisliked) Icons.Filled.ThumbDown else Icons.Outlined.ThumbDown,
+                        contentDescription = "Dislike",
+                        tint = if (isDisliked) MaterialTheme.colorScheme.error else LocalContentColor.current
+                    )
+                }
             }
 
             Spacer(Modifier.height(20.dp))

@@ -30,6 +30,7 @@ import com.nil.mopitube.PlaybackService
 import com.nil.mopitube.mopidy.ConnectionState
 import com.nil.mopitube.ui.components.AppDrawer
 import com.nil.mopitube.ui.screens.*
+import com.nil.mopitube.ui.screens.DislikedSongsScreen
 import com.nil.mopitube.ui.screens.settings.ClientSettingsScreen
 import com.nil.mopitube.ui.screens.settings.ServerSettingsScreen
 import com.nil.mopitube.ui.screens.settings.SettingsScreen
@@ -150,6 +151,7 @@ fun AppNav(
                                 currentRoute == "home" -> "Home"
                                 currentRoute == "search" -> "Search"
                                 currentRoute == "liked_songs" -> "Liked Songs"
+                                currentRoute == "disliked_songs" -> "Disliked Songs"
                                 currentRoute == "settings" -> "Settings"
                                 currentRoute == "server_settings" -> "Server Settings"
                                 currentRoute == "client_settings" -> "Client Settings"
@@ -354,6 +356,16 @@ fun AppNav(
                 composable("liked_songs") {
                     client.repo?.let { repo ->
                         LikedSongsScreen(
+                            repo = repo,
+                            onTrackClick = onTrackClick,
+                            onPlayerClick = onPlayerClick
+                        )
+                    }
+                }
+
+                composable("disliked_songs") {
+                    client.repo?.let { repo ->
+                        DislikedSongsScreen(
                             repo = repo,
                             onTrackClick = onTrackClick,
                             onPlayerClick = onPlayerClick
