@@ -94,7 +94,18 @@ class MopidyRepository(
     }
 
     suspend fun previous() {
-        rpc.call("core.playback.previous")
+        // core.playback.previous restarts the current song if > ~3s in.
+        // Instead, directly navigate to the previous TLID to always go to the prior track.
+        val tlTracks = getTracklistTracksWithTlid()
+        val currentTlid = getCurrentTrackTlid()
+        val currentIndex = tlTracks.indexOfFirst { it.first == currentTlid }
+        val prevIndex = currentIndex - 1
+        if (prevIndex >= 0) {
+            rpc.call("core.playback.play", buildJsonObject { put("tlid", JsonPrimitive(tlTracks[prevIndex].first)) })
+        } else {
+            // Already at the first track — seek to beginning
+            rpc.call("core.playback.seek", buildJsonObject { put("time_position", JsonPrimitive(0)) })
+        }
         updatePlaybackState()
     }
 
