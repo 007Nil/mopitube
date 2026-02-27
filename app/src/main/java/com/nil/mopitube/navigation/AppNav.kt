@@ -30,6 +30,7 @@ import com.nil.mopitube.PlaybackService
 import com.nil.mopitube.mopidy.ConnectionState
 import com.nil.mopitube.ui.components.AppDrawer
 import com.nil.mopitube.ui.screens.*
+import com.nil.mopitube.ui.screens.DislikedSongsScreen
 import com.nil.mopitube.ui.screens.settings.ClientSettingsScreen
 import com.nil.mopitube.ui.screens.settings.ServerSettingsScreen
 import com.nil.mopitube.ui.screens.settings.SettingsScreen
@@ -150,6 +151,7 @@ fun AppNav(
                                 currentRoute == "home" -> "Home"
                                 currentRoute == "search" -> "Search"
                                 currentRoute == "liked_songs" -> "Liked Songs"
+                                currentRoute == "disliked_songs" -> "Disliked Songs"
                                 currentRoute == "settings" -> "Settings"
                                 currentRoute == "server_settings" -> "Server Settings"
                                 currentRoute == "client_settings" -> "Client Settings"
@@ -310,6 +312,18 @@ fun AppNav(
                     }
                 }
                 val onPlayerClick: () -> Unit = { navController.navigate("player") }
+                val onPlayAlbum: (String) -> Unit = { albumUri ->
+                    scope.launch {
+                        client.repo?.let { repo ->
+                            try {
+                                withContext(Dispatchers.IO) { repo.playAlbum(albumUri) }
+                                navController.navigate("player")
+                            } catch (e: Exception) {
+                                Log.e("AppNav", "Failed to play album", e)
+                            }
+                        }
+                    }
+                }
 
                 composable("home") {
                     // Access repo safely. The '!!' is safe because this screen is only
@@ -349,6 +363,16 @@ fun AppNav(
                     }
                 }
 
+                composable("disliked_songs") {
+                    client.repo?.let { repo ->
+                        DislikedSongsScreen(
+                            repo = repo,
+                            onTrackClick = onTrackClick,
+                            onPlayerClick = onPlayerClick
+                        )
+                    }
+                }
+
                 composable("songs") {
                     client.repo?.let { repo ->
                         SongsScreen(repo = repo, onTrackClick = onTrackClick)
@@ -359,7 +383,8 @@ fun AppNav(
                     client.repo?.let { repo ->
                         AlbumsScreen(
                             repo = repo,
-                            onAlbumClick = { uri -> navController.navigate("album/${URLEncoder.encode(uri, "UTF-8")}") }
+                            onAlbumClick = { uri -> navController.navigate("album/${URLEncoder.encode(uri, "UTF-8")}") },
+                            onPlayAlbum = onPlayAlbum
                         )
                     }
                 }

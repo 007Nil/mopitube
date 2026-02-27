@@ -31,7 +31,8 @@ import androidx.compose.material.icons.filled.PlaylistPlay // For "Play next"
 @Composable
 fun AlbumsScreen(
     repo: MopidyRepository,
-    onAlbumClick: (String) -> Unit
+    onAlbumClick: (String) -> Unit,
+    onPlayAlbum: (String) -> Unit
 ) {
     var albums by remember { mutableStateOf<List<JsonObject>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
@@ -63,7 +64,8 @@ fun AlbumsScreen(
                     AlbumListItem(
                         repo = repo,
                         album = album,
-                        onClick = { uri?.let { onAlbumClick(it) } }
+                        onClick = { uri?.let { onAlbumClick(it) } },
+                        onPlayAlbum = { uri?.let { onPlayAlbum(it) } }
                     )
                 }
             }

@@ -3,6 +3,11 @@ package com.nil.mopitube.ui.screens
 import android.annotation.SuppressLint
 import android.util.Log
 import androidx.compose.animation.core.*
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -40,6 +45,7 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.nil.mopitube.mopidy.MopidyClient
 import com.nil.mopitube.mopidy.MopidyRepository
+import com.nil.mopitube.mopidy.TrackRepeatMode
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
@@ -75,6 +81,7 @@ fun PlayerScreen(
     var currentPosition by remember { mutableStateOf(-1) }
     var artworkCache by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
     var isRemovalInProgress by remember { mutableStateOf(false) }
+    var isAppendingTracks by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     var currentTrack by remember { mutableStateOf<JsonObject?>(null) }
@@ -86,8 +93,10 @@ fun PlayerScreen(
     var isSeeking by remember { mutableStateOf(false) }
     var pendingSeekPosition by remember { mutableStateOf(0f) }
     var isLiked by remember { mutableStateOf(false) }
+    var isDisliked by remember { mutableStateOf(false) }
     var volume by remember { mutableStateOf(100) }
     var isVolumeSliderVisible by remember { mutableStateOf(false) }
+    var repeatMode by remember { mutableStateOf(TrackRepeatMode.OFF) }
 
     // State for the bottom sheet content (Up Next vs. Lyrics)
     var selectedTab by remember { mutableStateOf(0) }
@@ -99,11 +108,10 @@ fun PlayerScreen(
 
     // This polling loop fetches track state and time
     LaunchedEffect(repo) {
-        // Fetch initial volume (one-time, before lifecycle-aware loop)
+        // Fetch initial volume and repeat mode (one-time, before lifecycle-aware loop)
         withContext(Dispatchers.IO) {
-            repo.getVolume()?.let {
-                volume = it
-            }
+            repo.getVolume()?.let { volume = it }
+            repeatMode = repo.getRepeatMode()
         }
         delay(250)
         // Only poll when the app is in the foreground
@@ -166,20 +174,28 @@ fun PlayerScreen(
                                 it.second["uri"]?.jsonPrimitive?.contentOrNull == currentUri
                             }
 
-                            // Auto-append when reaching last 3 tracks
-                            if (currentPosition != -1 && tracklistLength > 0) {
+                            // Auto-append when reaching last 3 tracks (with queue cap at 100 items)
+                            if (currentPosition != -1 && tracklistLength > 0 && !isAppendingTracks) {
                                 val remaining = tracklistLength - currentPosition - 1
-                                if (remaining <= 3) {
-                                    Log.d("PlayerScreen", "Queue low ($remaining remaining). Appending more tracks")
+                                // Only append if queue is low AND below the 100-item cap
+                                if (remaining <= 3 && tracklistLength < 100) {
+                                    isAppendingTracks = true
+                                    try {
+                                        Log.d("PlayerScreen", "Queue low ($remaining remaining, $tracklistLength total). Appending more tracks")
 
-                                    // Get existing URIs to filter duplicates
-                                    val existingUris = tracklistTracksWithTlid
-                                        .map { it.second["uri"]?.jsonPrimitive?.contentOrNull }
-                                        .filterNotNull()
-                                        .toSet()
+                                        // Get existing URIs to filter duplicates
+                                        val existingUris = tracklistTracksWithTlid
+                                            .map { it.second["uri"]?.jsonPrimitive?.contentOrNull }
+                                            .filterNotNull()
+                                            .toSet()
 
-                                    val appendedCount = repo.appendRandomTracksToQueue(20, existingUris)
-                                    Log.d("PlayerScreen", "Appended $appendedCount new tracks")
+                                        // Calculate how many tracks to append (don't exceed cap)
+                                        val maxToAppend = (100 - tracklistLength).coerceAtMost(20)
+                                        val appendedCount = repo.appendSimilarTracksToQueue(maxToAppend, existingUris, currentTrack)
+                                        Log.d("PlayerScreen", "Appended $appendedCount new tracks (queue now at ${tracklistLength + appendedCount})")
+                                    } finally {
+                                        isAppendingTracks = false
+                                    }
                                 }
                             }
                         }
@@ -192,16 +208,17 @@ fun PlayerScreen(
         }
     }
 
-    // This effect fetches artwork and like status when the track changes
-    // This effect fetches artwork and like status when the track changes
+    // This effect fetches artwork, like, and dislike status when the track changes
     LaunchedEffect(currentTrack, repo) {
         artworkUrl = null
         isLiked = false
+        isDisliked = false
         val track = currentTrack ?: return@LaunchedEffect
         val trackUri = track["uri"]?.jsonPrimitive?.contentOrNull
         if (!trackUri.isNullOrEmpty()) {
-            isLiked = withContext(Dispatchers.IO) { repo.isTrackLiked(trackUri) }
             withContext(Dispatchers.IO) {
+                isLiked = repo.isTrackLiked(trackUri)
+                isDisliked = repo.isTrackDisliked(trackUri)
                 artworkUrl = repo.findArtwork(track)
             }
         }
@@ -336,7 +353,23 @@ fun PlayerScreen(
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = { /* Dislike action */ }) { Icon(Icons.Outlined.ThumbDown, "Dislike") }
+                IconButton(onClick = {
+                    scope.launch {
+                        val next = when (repeatMode) {
+                            TrackRepeatMode.OFF -> TrackRepeatMode.ALL
+                            TrackRepeatMode.ALL -> TrackRepeatMode.ONE
+                            TrackRepeatMode.ONE -> TrackRepeatMode.OFF
+                        }
+                        repeatMode = next
+                        withContext(Dispatchers.IO) { repo.setRepeatMode(next) }
+                    }
+                }) {
+                    Icon(
+                        imageVector = if (repeatMode == TrackRepeatMode.ONE) Icons.Filled.RepeatOne else Icons.Filled.Repeat,
+                        contentDescription = "Repeat",
+                        tint = if (repeatMode == TrackRepeatMode.OFF) LocalContentColor.current.copy(alpha = 0.38f) else MaterialTheme.colorScheme.primary
+                    )
+                }
                 IconButton(onClick = { scope.launch { repo.previous() } }) { Icon(Icons.Filled.SkipPrevious, "Previous", modifier = Modifier.size(36.dp)) }
                 IconButton(onClick = { scope.launch { if (isPlaying) repo.pause() else repo.play() } }) { Icon(if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, "Play/Pause", modifier = Modifier.size(48.dp)) }
                 IconButton(onClick = { scope.launch { repo.next() } }) { Icon(Icons.Filled.SkipNext, "Next", modifier = Modifier.size(36.dp)) }
@@ -344,10 +377,29 @@ fun PlayerScreen(
                     scope.launch {
                         val trackUri = currentTrack?.get("uri")?.jsonPrimitive?.contentOrNull
                         if (!trackUri.isNullOrEmpty()) {
-                            isLiked = repo.toggleLike(trackUri)
+                            isLiked = withContext(Dispatchers.IO) { repo.toggleLike(trackUri) }
+                            if (isLiked) isDisliked = false
                         }
                     }
                 }) { Icon(imageVector = if (isLiked) Icons.Filled.ThumbUp else Icons.Outlined.ThumbUp, "Like", tint = if (isLiked) MaterialTheme.colorScheme.primary else LocalContentColor.current) }
+                IconButton(onClick = {
+                    scope.launch {
+                        val trackUri = currentTrack?.get("uri")?.jsonPrimitive?.contentOrNull
+                        if (!trackUri.isNullOrEmpty()) {
+                            isDisliked = withContext(Dispatchers.IO) { repo.toggleDislike(trackUri) }
+                            if (isDisliked) {
+                                isLiked = false
+                                repo.next()
+                            }
+                        }
+                    }
+                }) {
+                    Icon(
+                        imageVector = if (isDisliked) Icons.Filled.ThumbDown else Icons.Outlined.ThumbDown,
+                        contentDescription = "Dislike",
+                        tint = if (isDisliked) MaterialTheme.colorScheme.error else LocalContentColor.current
+                    )
+                }
             }
 
             Spacer(Modifier.height(20.dp))
@@ -461,6 +513,18 @@ fun UpNextQueueItem(
     val artistName = track["artists"]?.jsonArray?.firstOrNull()
         ?.jsonObject?.get("name")?.jsonPrimitive?.contentOrNull ?: "Unknown Artist"
 
+    // Pulse animation for play icon (only when current track is playing)
+    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+    val pulseScale by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 500, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseScale"
+    )
+
     // Spring-back animation when swipe cancelled
     LaunchedEffect(isSwipeTriggered) {
         if (!isSwipeTriggered && offsetX != 0f) {
@@ -535,9 +599,9 @@ fun UpNextQueueItem(
                             modifier = Modifier
                                 .size(20.dp)
                                 .graphicsLayer {
-                                    // Subtle pulse animation
-                                    scaleX = 1f + (sin(System.currentTimeMillis() / 500.0) * 0.1).toFloat()
-                                    scaleY = 1f + (sin(System.currentTimeMillis() / 500.0) * 0.1).toFloat()
+                                    // Subtle pulse animation using rememberInfiniteTransition
+                                    scaleX = pulseScale
+                                    scaleY = pulseScale
                                 }
                         )
                         Spacer(modifier = Modifier.width(8.dp))
@@ -608,8 +672,9 @@ fun UpNextQueue(
         val listState = rememberLazyListState()
         val currentUri = currentTrack?.get("uri")?.jsonPrimitive?.contentOrNull
 
-        // Auto-scroll to currently playing track when queue or current track changes
-        LaunchedEffect(queue, currentUri) {
+        // Auto-scroll to currently playing track only when the current track changes
+        // Do NOT depend on queue to avoid interrupting manual scrolling
+        LaunchedEffect(currentUri) {
             if (currentUri != null) {
                 val currentIndex = queue.indexOfFirst { (_, track) ->
                     track["uri"]?.jsonPrimitive?.contentOrNull == currentUri

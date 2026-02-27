@@ -12,6 +12,18 @@
         "clear": true,
         "focus": true
       }
+    },
+    {
+      "label": "Android ▶ Build Debug APK + Copy to Home",
+      "type": "shell",
+      "command": "echo '▶ Building debug APK...'; ./gradlew assembleDebug; echo '▶ Copying APK to home directory...'; cp app/build/outputs/apk/debug/app-debug.apk ~/ && echo '✓ APK copied to ~/app-debug.apk'",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true,
+        "focus": true
+      }
     }
   ]
 }

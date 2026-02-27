@@ -3,15 +3,19 @@ package com.nil.mopitube.mopidy
 import android.content.Context
 import android.util.Log
 import com.nil.mopitube.database.ArtworkCacheEntry
+import com.nil.mopitube.database.DislikedTrack
 import com.nil.mopitube.database.LikedTrack
 import com.nil.mopitube.database.MopitubeDatabase // Import the CORRECT database
 import com.nil.mopitube.database.PlayHistoryEntry
 import com.nil.mopitube.database.Track
+import com.nil.mopitube.utils.FuzzySearch
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
 import kotlinx.serialization.json.add
 import java.net.URLDecoder
@@ -19,6 +23,8 @@ import java.nio.charset.StandardCharsets
 import kotlin.collections.component1
 import kotlin.collections.component2
 import kotlin.math.log
+
+enum class TrackRepeatMode { OFF, ALL, ONE }
 
 // In-memory LRU cache for artwork URLs (max 300 entries).
 private object ArtworkProvider {
@@ -89,7 +95,18 @@ class MopidyRepository(
     }
 
     suspend fun previous() {
-        rpc.call("core.playback.previous")
+        // core.playback.previous restarts the current song if > ~3s in.
+        // Instead, directly navigate to the previous TLID to always go to the prior track.
+        val tlTracks = getTracklistTracksWithTlid()
+        val currentTlid = getCurrentTrackTlid()
+        val currentIndex = tlTracks.indexOfFirst { it.first == currentTlid }
+        val prevIndex = currentIndex - 1
+        if (prevIndex >= 0) {
+            rpc.call("core.playback.play", buildJsonObject { put("tlid", JsonPrimitive(tlTracks[prevIndex].first)) })
+        } else {
+            // Already at the first track — seek to beginning
+            rpc.call("core.playback.seek", buildJsonObject { put("time_position", JsonPrimitive(0)) })
+        }
         updatePlaybackState()
     }
 
@@ -190,7 +207,8 @@ class MopidyRepository(
                     artistName = artistName,
                     albumName = albumName,
                     albumUri = albumUri,
-                    length = trackJson["length"]?.jsonPrimitive?.intOrNull
+                    length = trackJson["length"]?.jsonPrimitive?.intOrNull,
+                    genre = trackJson["genre"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotBlank() }
                 )
             }
             ?.filter { it.uri.isNotBlank() } // Ensure we don't save tracks with an empty URI
@@ -271,6 +289,53 @@ class MopidyRepository(
         }
     }
 
+    suspend fun appendSimilarTracksToQueue(
+        count: Int,
+        existingUris: Set<String>,
+        currentTrack: JsonObject?
+    ): Int {
+        val dislikedUris = dao.getAllDislikedTracks().map { it.uri }.toSet()
+        val excludeList = (existingUris + dislikedUris).toList().ifEmpty { listOf("__none__") }
+
+        // Tier 1: same genre
+        val genre = currentTrack?.get("genre")?.jsonPrimitive?.contentOrNull?.trim()
+        var candidates: List<com.nil.mopitube.database.Track> = emptyList()
+
+        if (!genre.isNullOrBlank()) {
+            candidates = dao.getTracksByGenre(genre, excludeList, count)
+            Log.d("SmartQueue", "Genre '$genre': found ${candidates.size} tracks")
+        }
+
+        // Tier 2: same artist (fills remaining slots)
+        val needed = count - candidates.size
+        if (needed > 0) {
+            val artist = currentTrack
+                ?.get("artists")?.jsonArray
+                ?.firstOrNull()?.jsonObject
+                ?.get("name")?.jsonPrimitive?.contentOrNull
+            if (!artist.isNullOrBlank()) {
+                val alreadyUsed = (existingUris + candidates.map { it.uri })
+                    .toList().ifEmpty { listOf("__none__") }
+                val artistTracks = dao.getTracksByArtist(artist, alreadyUsed, needed)
+                candidates = candidates + artistTracks
+                Log.d("SmartQueue", "Artist '$artist': +${artistTracks.size} tracks")
+            }
+        }
+
+        // Tier 3: random fallback
+        if (candidates.isEmpty()) {
+            Log.d("SmartQueue", "No genre/artist match — falling back to random")
+            return appendRandomTracksToQueue(count, existingUris)
+        }
+
+        val uris = candidates.map { it.uri }
+        val params = buildJsonObject {
+            put("uris", buildJsonArray { uris.forEach { add(JsonPrimitive(it)) } })
+        }
+        rpc.call("core.tracklist.add", params)
+        return candidates.size
+    }
+
     suspend fun appendRandomTracksToQueue(count: Int, existingUris: Set<String>): Int {
         val randomTracks = getRandomTracks(count)
         val newTracks = randomTracks.filter {
@@ -299,7 +364,9 @@ class MopidyRepository(
         val params = buildJsonObject { put("uri", "local:directory?type=track") }
         val browseResult = rpc.call("core.library.browse", params)
         if (browseResult == null || browseResult !is JsonArray) return emptyList()
+        val dislikedUris = dao.getAllDislikedTracks().map { it.uri }.toSet()
         val allTrackRefs = browseResult.jsonArray.mapNotNull { it.jsonObject }
+            .filter { it["uri"]?.jsonPrimitive?.content !in dislikedUris }
         if (allTrackRefs.isEmpty()) return emptyList()
         val randomTrackUris = allTrackRefs.shuffled().take(count).mapNotNull { it["uri"]?.jsonPrimitive?.content }
         if (randomTrackUris.isEmpty()) return emptyList()
@@ -318,11 +385,28 @@ class MopidyRepository(
         return rpc.call("core.library.browse", params)
     }
     suspend fun search(query: Map<String, List<String>>): List<JsonElement> {
-        // Extract search query string (typically from "any" key)
         val searchQuery = query["any"]?.firstOrNull() ?: return emptyList()
 
-        // Search local database
-        val matchedTracks = dao.searchTracks(searchQuery)
+        // 1. Fast exact/LIKE matches from the database (ranked first)
+        val exactMatches = dao.searchTracks(searchQuery)
+        val exactUris = exactMatches.map { it.uri }.toSet()
+
+        // 2. Fuzzy matches over the full track cache (CPU work → Default dispatcher)
+        val fuzzyThreshold = 0.6f
+        val fuzzyMatches = withContext(Dispatchers.Default) {
+            val allTracks = dao.getAllCachedTracks()
+            allTracks
+                .filter { it.uri !in exactUris }
+                .mapNotNull { track ->
+                    val s = FuzzySearch.bestScore(searchQuery, track.name, track.artistName, track.albumName)
+                    if (s >= fuzzyThreshold) track to s else null
+                }
+                .sortedByDescending { it.second }
+                .map { it.first }
+        }
+
+        // 3. Merge: exact results first, fuzzy after
+        val matchedTracks = exactMatches + fuzzyMatches
 
         // Convert tracks to JsonObject format
         val trackJsonObjects = matchedTracks.map { track ->
@@ -471,9 +555,34 @@ class MopidyRepository(
             dao.unlikeTrack(trackUri)
             return false
         } else {
+            dao.undislikeTrack(trackUri) // like and dislike are mutually exclusive
             dao.likeTrack(LikedTrack(uri = trackUri))
             return true
         }
+    }
+
+    suspend fun isTrackDisliked(trackUri: String): Boolean {
+        return dao.findDislikedTrack(trackUri) != null
+    }
+
+    suspend fun toggleDislike(trackUri: String): Boolean {
+        val isCurrentlyDisliked = isTrackDisliked(trackUri)
+        if (isCurrentlyDisliked) {
+            dao.undislikeTrack(trackUri)
+            return false
+        } else {
+            dao.unlikeTrack(trackUri) // like and dislike are mutually exclusive
+            dao.dislikeTrack(DislikedTrack(uri = trackUri))
+            return true
+        }
+    }
+
+    suspend fun getDislikedTracks(): List<JsonObject> {
+        val dislikedUris = dao.getAllDislikedTracks().map { it.uri }
+        if (dislikedUris.isEmpty()) return emptyList()
+        val lookupParams = buildJsonObject { put("uris", buildJsonArray { dislikedUris.forEach { add(it) } }) }
+        val lookupResult = rpc.call("core.library.lookup", lookupParams)
+        return lookupResult?.jsonObject?.values?.flatMap { it.jsonArray }?.mapNotNull { it.jsonObject } ?: emptyList()
     }
 
     suspend fun getLikedTracks(): List<JsonObject> {
@@ -482,6 +591,20 @@ class MopidyRepository(
         val lookupParams = buildJsonObject { put("uris", buildJsonArray { likedTrackUris.forEach { add(it) } }) }
         val lookupResult = rpc.call("core.library.lookup", lookupParams)
         return lookupResult?.jsonObject?.values?.flatMap { it.jsonArray }?.mapNotNull { it.jsonObject } ?: emptyList()
+    }
+
+    suspend fun playAlbum(albumUri: String) {
+        val result = getAlbumSongs(albumUri)
+        val uris = result?.jsonArray
+            ?.mapNotNull { it.jsonObject?.get("uri")?.jsonPrimitive?.contentOrNull }
+            ?: return
+        if (uris.isEmpty()) return
+        clearTracklist()
+        val params = buildJsonObject {
+            put("uris", buildJsonArray { uris.forEach { add(JsonPrimitive(it)) } })
+        }
+        rpc.call("core.tracklist.add", params)
+        play()
     }
 
     suspend fun playAll(trackUris: List<String>) {
@@ -500,7 +623,8 @@ class MopidyRepository(
     }
 
     suspend fun getMostPlayedTracks(count: Int = 10): List<JsonObject> {
-        val mostPlayedUris = dao.getMostPlayed(count).map { it.uri }
+        val dislikedUris = dao.getAllDislikedTracks().map { it.uri }.toSet()
+        val mostPlayedUris = dao.getMostPlayed(count).map { it.uri }.filter { it !in dislikedUris }
         if (mostPlayedUris.isEmpty()) return emptyList()
         val lookupParams = buildJsonObject { put("uris", buildJsonArray { mostPlayedUris.forEach { add(it) } }) }
         val lookupResult = rpc.call("core.library.lookup", lookupParams)
@@ -518,6 +642,23 @@ class MopidyRepository(
         val params = buildJsonObject { put("volume", JsonPrimitive(volume)) }
         val result = rpc.call("core.mixer.set_volume", params)
         return result?.jsonPrimitive?.booleanOrNull ?: false
+    }
+
+    suspend fun getRepeatMode(): TrackRepeatMode {
+        val repeat = rpc.call("core.tracklist.get_repeat")?.jsonPrimitive?.booleanOrNull ?: false
+        val single = rpc.call("core.tracklist.get_single")?.jsonPrimitive?.booleanOrNull ?: false
+        return when {
+            repeat && single -> TrackRepeatMode.ONE
+            repeat -> TrackRepeatMode.ALL
+            else -> TrackRepeatMode.OFF
+        }
+    }
+
+    suspend fun setRepeatMode(mode: TrackRepeatMode) {
+        val repeat = mode != TrackRepeatMode.OFF
+        val single = mode == TrackRepeatMode.ONE
+        rpc.call("core.tracklist.set_repeat", buildJsonObject { put("value", JsonPrimitive(repeat)) })
+        rpc.call("core.tracklist.set_single", buildJsonObject { put("value", JsonPrimitive(single)) })
     }
 
     suspend fun playTrackFromTracklist(trackUri: String): Boolean {

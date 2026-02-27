@@ -7,6 +7,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.ThumbDown
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -31,6 +32,7 @@ fun AppDrawer(
     val items = listOf(
         NavDrawerItem("home", "Home", Icons.Default.Home),
         NavDrawerItem("liked_songs", "Liked Songs", Icons.Default.Favorite),
+        NavDrawerItem("disliked_songs", "Disliked Songs", Icons.Default.ThumbDown),
         NavDrawerItem("settings", "Settings", Icons.Default.Settings)
     )
 
