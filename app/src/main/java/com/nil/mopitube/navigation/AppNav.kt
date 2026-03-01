@@ -240,7 +240,7 @@ fun AppNav(
                     )
                 }
                 composable("server_settings") {
-                    ServerSettingsScreen()
+                    ServerSettingsScreen(repo = client.repo)
                 }
                 composable("client_settings") {
                     ClientSettingsScreen(repo = client.repo)
