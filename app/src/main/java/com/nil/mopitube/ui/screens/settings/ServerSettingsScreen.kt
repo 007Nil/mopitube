@@ -35,14 +35,16 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.nil.mopitube.data.UserPreferencesRepository
+import com.nil.mopitube.mopidy.MopidyRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
 @Composable
-fun ServerSettingsScreen() {
+fun ServerSettingsScreen(repo: MopidyRepository? = null) {
     val context = LocalContext.current
     val userPreferencesRepository = remember { UserPreferencesRepository(context) }
     val scope = rememberCoroutineScope()
@@ -50,6 +52,7 @@ fun ServerSettingsScreen() {
     var host by remember { mutableStateOf("") }
     var port by remember { mutableStateOf("") }
     var isScanning by remember { mutableStateOf(false) }
+    var scanStatusText by remember { mutableStateOf<String?>(null) }
 
     val savedHost by userPreferencesRepository.serverHost.collectAsState(initial = "")
     val savedPort by userPreferencesRepository.serverPort.collectAsState(initial = "")
@@ -57,6 +60,32 @@ fun ServerSettingsScreen() {
     LaunchedEffect(savedHost, savedPort) {
         host = savedHost
         port = savedPort
+        // Fetch last known scan status when the host is available
+        if (savedHost.isNotBlank()) {
+            val status = getScanStatus(savedHost)
+            if (status != null && !status.running) {
+                scanStatusText = if (status.lastStatus == "success") "Last scan: complete" else "Last scan: ${status.lastStatus}"
+            } else if (status?.running == true) {
+                // A scan is already in progress on the server — reflect that in the UI
+                isScanning = true
+                scanStatusText = "Scanning..."
+                while (true) {
+                    kotlinx.coroutines.delay(2000)
+                    val updated = getScanStatus(savedHost) ?: break
+                    if (!updated.running) {
+                        if (updated.lastStatus == "success") {
+                            scanStatusText = "Scan complete — syncing client..."
+                            repo?.refreshAllTracksFromServer()
+                            scanStatusText = "Scan complete"
+                        } else {
+                            scanStatusText = "Scan failed: ${updated.lastStatus}"
+                        }
+                        isScanning = false
+                        break
+                    }
+                }
+            }
+        }
     }
 
     LazyColumn(
@@ -135,9 +164,17 @@ fun ServerSettingsScreen() {
                 headlineContent = { Text("Scan Local Library") },
                 supportingContent = {
                     Text(
-                        text = if (isScanning) "Scanning..." else "Trigger a Mopidy local media scan on the server.",
+                        text = when {
+                            isScanning -> scanStatusText ?: "Starting scan..."
+                            scanStatusText != null -> scanStatusText!!
+                            else -> "Trigger a local media scan on the server (port 9000)."
+                        },
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = when {
+                            scanStatusText == "Scan complete" -> MaterialTheme.colorScheme.primary
+                            scanStatusText?.startsWith("Scan failed") == true -> MaterialTheme.colorScheme.error
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        }
                     )
                 },
                 leadingContent = {
@@ -157,14 +194,32 @@ fun ServerSettingsScreen() {
                 },
                 modifier = Modifier.clickable(enabled = !isScanning && host.isNotBlank()) {
                     isScanning = true
+                    scanStatusText = null
                     scope.launch {
                         try {
-                            val serverAddr = if (port.isNotBlank()) "$host:$port" else host
-                            val success = triggerServerScan(serverAddr)
-                            val message = if (success) "Scan triggered successfully!" else "Scan failed. Check server endpoint."
-                            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                            val started = triggerLibraryScan(host)
+                            if (!started) {
+                                scanStatusText = "Scan failed: could not reach scan server"
+                                return@launch
+                            }
+                            // Poll scan-status until running == false
+                            scanStatusText = "Scanning..."
+                            while (true) {
+                                kotlinx.coroutines.delay(2000)
+                                val status = getScanStatus(host) ?: break
+                                if (!status.running) {
+                                    if (status.lastStatus == "success") {
+                                        scanStatusText = "Scan complete — syncing client..."
+                                        repo?.refreshAllTracksFromServer()
+                                        scanStatusText = "Scan complete"
+                                    } else {
+                                        scanStatusText = "Scan failed: ${status.lastStatus}"
+                                    }
+                                    break
+                                }
+                            }
                         } catch (e: Exception) {
-                            Toast.makeText(context, "Scan failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                            scanStatusText = "Scan failed: ${e.message}"
                         } finally {
                             isScanning = false
                         }
@@ -175,9 +230,11 @@ fun ServerSettingsScreen() {
     }
 }
 
-private suspend fun triggerServerScan(serverAddress: String): Boolean = withContext(Dispatchers.IO) {
+private data class ScanStatus(val running: Boolean, val lastStatus: String)
+
+private suspend fun triggerLibraryScan(host: String): Boolean = withContext(Dispatchers.IO) {
     try {
-        val url = URL("http://$serverAddress/scan")
+        val url = URL("http://$host:9000/rescan")
         val conn = url.openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
         conn.connectTimeout = 5000
@@ -189,5 +246,24 @@ private suspend fun triggerServerScan(serverAddress: String): Boolean = withCont
         code in 200..299
     } catch (e: Exception) {
         false
+    }
+}
+
+private suspend fun getScanStatus(host: String): ScanStatus? = withContext(Dispatchers.IO) {
+    try {
+        val url = URL("http://$host:9000/scan-status")
+        val conn = url.openConnection() as HttpURLConnection
+        conn.requestMethod = "GET"
+        conn.connectTimeout = 5000
+        conn.readTimeout = 10000
+        val body = conn.inputStream.bufferedReader().readText()
+        conn.disconnect()
+        val json = JSONObject(body)
+        ScanStatus(
+            running = json.optBoolean("running", false),
+            lastStatus = json.optString("last_status", "unknown")
+        )
+    } catch (e: Exception) {
+        null
     }
 }
