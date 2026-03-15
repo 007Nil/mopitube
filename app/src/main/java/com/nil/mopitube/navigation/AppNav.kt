@@ -31,6 +31,7 @@ import com.nil.mopitube.mopidy.ConnectionState
 import com.nil.mopitube.ui.components.AppDrawer
 import com.nil.mopitube.ui.screens.*
 import com.nil.mopitube.ui.screens.DislikedSongsScreen
+import com.nil.mopitube.ui.screens.settings.AboutScreen
 import com.nil.mopitube.ui.screens.settings.ClientSettingsScreen
 import com.nil.mopitube.ui.screens.settings.ServerSettingsScreen
 import com.nil.mopitube.ui.screens.settings.SettingsScreen
@@ -155,6 +156,7 @@ fun AppNav(
                                 currentRoute == "settings" -> "Settings"
                                 currentRoute == "server_settings" -> "Server Settings"
                                 currentRoute == "client_settings" -> "Client Settings"
+                                currentRoute == "about" -> "About"
                                 currentRoute == "songs" -> "Songs"
                                 currentRoute == "albums" -> "Albums"
                                 currentRoute == "artists" -> "Artists"
@@ -248,8 +250,12 @@ fun AppNav(
                 composable("settings") {
                     SettingsScreen(
                         onNavigateToServerSettings = { navController.navigate("server_settings") },
-                        onNavigateToClientSettings = { navController.navigate("client_settings") }
+                        onNavigateToClientSettings = { navController.navigate("client_settings") },
+                        onNavigateToAbout = { navController.navigate("about") }
                     )
+                }
+                composable("about") {
+                    AboutScreen()
                 }
                 composable("player") {
                     PlayerScreen(
