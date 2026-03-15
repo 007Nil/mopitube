@@ -38,14 +38,9 @@ fun AlbumItem(
     val name = album["name"]?.jsonPrimitive?.contentOrNull ?: "Unknown Album"
     var imageUrl by remember { mutableStateOf<String?>(null) }
 
-    // This logic is now simple, direct, and efficient.
     LaunchedEffect(album) {
-        val albumUri = album["uri"]?.jsonPrimitive?.contentOrNull
-        if (!albumUri.isNullOrEmpty()) {
-            withContext(Dispatchers.IO) {
-                // It calls the correct, caching function from the repository.
-                imageUrl = repo.getAlbumImages(albumUri).firstOrNull()
-            }
+        withContext(Dispatchers.IO) {
+            imageUrl = repo.findArtwork(album)
         }
     }
 

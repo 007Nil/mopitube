@@ -17,6 +17,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.nil.mopitube.BuildConfig
 
 @Composable
 fun AboutScreen() {
@@ -39,7 +40,7 @@ fun AboutScreen() {
             style = MaterialTheme.typography.headlineMedium
         )
         Text(
-            text = "Version 1.0",
+            text = "Version ${BuildConfig.VERSION_NAME}",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
