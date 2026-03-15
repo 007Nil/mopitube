@@ -18,9 +18,11 @@ import com.nil.mopitube.mopidy.MopidyRepository
 import com.nil.mopitube.ui.components.AlbumSearchResult
 import com.nil.mopitube.ui.components.ArtistSearchResult
 import com.nil.mopitube.ui.components.TrackListItem
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -49,12 +51,13 @@ fun SearchScreen(
     var searchResults by remember { mutableStateOf<List<JsonElement>>(emptyList()) }
     var searchJob by remember { mutableStateOf<Job?>(null) }
     val scope = rememberCoroutineScope()
+    var deletedUris by remember { mutableStateOf(setOf<String>()) }
 
     // Unwrap SearchResult objects and categorize by type
-    val tracks = remember(searchResults) {
+    val tracks = remember(searchResults, deletedUris) {
         searchResults.flatMap { result ->
             result.jsonObject["tracks"]?.jsonArray?.mapNotNull { it.jsonObject } ?: emptyList()
-        }
+        }.filter { it["uri"]?.jsonPrimitive?.contentOrNull !in deletedUris }
     }
 
     val albums = remember(searchResults) {
@@ -126,6 +129,18 @@ fun SearchScreen(
                             track = track,
                             onClick = {
                                 onTrackClick(track["uri"]?.jsonPrimitive?.contentOrNull ?: "")
+                            },
+                            onDelete = { trackUri ->
+                                scope.launch {
+                                    val ok = withContext(Dispatchers.IO) {
+                                        repo.deleteTrack(repo.serverHost, trackUri)
+                                    }
+                                    if (ok) {
+                                        deletedUris = deletedUris + trackUri
+                                    } else {
+                                        Toast.makeText(context, "Delete failed — check server", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
                             }
                         )
                     }

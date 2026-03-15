@@ -117,6 +117,9 @@ interface MopitubeDao {
     @Query("DELETE FROM tracks")
     suspend fun deleteAllTracks()
 
+    @Query("DELETE FROM tracks WHERE uri = :uri")
+    suspend fun deleteTrackByUri(uri: String)
+
     // ===== Play History Methods =====
     @Insert
     suspend fun insertPlayHistory(entry: PlayHistoryEntry)

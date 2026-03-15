@@ -63,3 +63,41 @@ suspend fun uploadArtworkToServer(
         false
     }
 }
+
+/**
+ * Asks the scan server to permanently delete a track's audio file from the server filesystem.
+ *
+ * Server contract (POST http://{host}:9000/delete):
+ *   Form field: track_uri (text) — Mopidy track URI
+ *   Response: {"status": "ok"} on success
+ */
+suspend fun deleteTrackFromServer(host: String, trackUri: String): Boolean = withContext(Dispatchers.IO) {
+    Log.d("TrackDelete", "Deleting on server http://$host:9000/delete — trackUri=$trackUri")
+    try {
+        val boundary = "----MopitubeBoundary${System.currentTimeMillis()}"
+        val url = URL("http://$host:9000/delete")
+        val conn = url.openConnection() as HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.doOutput = true
+        conn.connectTimeout = 10000
+        conn.readTimeout = 15000
+        conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+
+        DataOutputStream(conn.outputStream).use { out ->
+            out.writeBytes("--$boundary\r\n")
+            out.writeBytes("Content-Disposition: form-data; name=\"track_uri\"\r\n\r\n")
+            out.writeBytes("$trackUri\r\n")
+            out.writeBytes("--$boundary--\r\n")
+        }
+
+        val code = conn.responseCode
+        val body = (if (code in 200..299) conn.inputStream else conn.errorStream)
+            ?.bufferedReader()?.readText() ?: ""
+        conn.disconnect()
+        Log.d("TrackDelete", "Response $code: $body")
+        code in 200..299
+    } catch (e: Exception) {
+        Log.e("TrackDelete", "Delete failed", e)
+        false
+    }
+}

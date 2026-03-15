@@ -50,6 +50,9 @@ class MopidyRepository(
     private val prefs = context.getSharedPreferences("mopitube_cache", Context.MODE_PRIVATE)
     private val trackCacheKey = "track_cache_timestamp_$serverAddress"
 
+    /** Just the hostname/IP — used to reach the scan server on port 9000. */
+    val serverHost: String = serverAddress.substringBefore(':')
+
     // Playback state flows for notification service
     private val _currentTrack = MutableStateFlow<JsonObject?>(null)
     val currentTrack: StateFlow<JsonObject?> = _currentTrack.asStateFlow()
@@ -620,6 +623,38 @@ class MopidyRepository(
         }
         rpc.call("core.tracklist.add", params)
         play()
+    }
+
+    /**
+     * Permanently deletes a track: removes the file from the server, cleans up all local state
+     * (track cache, artwork, liked/disliked, play history, tracklist), and triggers a Mopidy rescan.
+     * Returns true if the server confirmed the deletion.
+     */
+    suspend fun deleteTrack(serverHost: String, trackUri: String): Boolean {
+        val ok = deleteTrackFromServer(serverHost, trackUri)
+        if (!ok) return false
+
+        // Remove from all local DB tables
+        dao.deleteTrackByUri(trackUri)
+        dao.unlikeTrack(trackUri)
+        dao.undislikeTrack(trackUri)
+
+        // Clear artwork caches
+        clearArtworkForTrack(trackUri)
+        val albumUri = dao.getTrackByUri(trackUri)?.albumUri
+        if (!albumUri.isNullOrBlank()) clearArtworkForAlbum(albumUri)
+
+        // Remove from current Mopidy tracklist if present
+        try {
+            val tlid = getTracklistTracksWithTlid()
+                .firstOrNull { it.second["uri"]?.jsonPrimitive?.contentOrNull == trackUri }
+                ?.first
+            if (tlid != null) removeTrackFromTracklist(tlid)
+        } catch (e: Exception) {
+            Log.w("MopidyRepository", "Could not remove deleted track from tracklist", e)
+        }
+
+        return true
     }
 
     suspend fun playAll(trackUris: List<String>) {
