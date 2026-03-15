@@ -37,6 +37,7 @@ private object ArtworkProvider {
     private val mutex = Mutex()
     suspend fun get(key: String): String? = mutex.withLock { cache[key] }
     suspend fun put(key: String, url: String) = mutex.withLock { cache[key] = url }
+    suspend fun remove(key: String) = mutex.withLock { cache.remove(key) }
 }
 
 class MopidyRepository(
@@ -503,45 +504,59 @@ class MopidyRepository(
         return imageUrls
     }
 
+    suspend fun getAlbumUriForTrack(trackUri: String): String? =
+        dao.getTrackByUri(trackUri)?.albumUri
+
+    suspend fun clearArtworkForAlbum(albumUri: String) {
+        val cacheKey = "album-art|$albumUri"
+        ArtworkProvider.remove(cacheKey)
+        dao.deleteArtwork(cacheKey)
+    }
+
     suspend fun findArtwork(track: JsonObject?): String? {
         if (track == null) return null
-        // 1. Get the Album URI from the track, not the track's own URI.
         val albumUri = track["album"]?.jsonObject?.get("uri")?.jsonPrimitive?.contentOrNull
-        if (albumUri.isNullOrBlank()) {
-            Log.w("ArtworkDebug", "Track '${track["name"]?.jsonPrimitive?.content}' has no album URI.")
-            return null
-        }
+        val trackUri = track["uri"]?.jsonPrimitive?.contentOrNull
 
-        // 2. Use the Album URI for the cache key.
-        val cacheKey = "album-art|$albumUri"
+        // Use album URI if available, otherwise fall back to track URI (e.g. tracks with no album tag)
+        val queryUri = albumUri?.takeIf { it.isNotBlank() } ?: trackUri?.takeIf { it.isNotBlank() } ?: return null
+        val cacheKey = if (!albumUri.isNullOrBlank()) "album-art|$albumUri" else "track-art|$queryUri"
 
-        // 3. Check memory cache.
+        // Check memory cache
         ArtworkProvider.get(cacheKey)?.let { return it }
 
-        // 4. Check database cache.
+        // Check database cache
         dao.getArtwork(cacheKey)?.let {
             ArtworkProvider.put(cacheKey, it.imageUrl)
             return it.imageUrl
         }
 
-        // 5. Fetch from server using the correct ALBUM URI.
-        val params = buildJsonObject { put("uris", JsonArray(listOf(JsonPrimitive(albumUri)))) }
+        // Fetch from Mopidy
+        val params = buildJsonObject { put("uris", JsonArray(listOf(JsonPrimitive(queryUri)))) }
         val res = rpc.call("core.library.get_images", params)
-
-        // The result is keyed by the album URI.
-        val imageResultsObject = (res as? JsonObject)?.get(albumUri)
-        val arr = imageResultsObject?.jsonArray
-        val imageUrl = arr?.mapNotNull {
+        val imageUrl = (res as? JsonObject)?.get(queryUri)?.jsonArray?.mapNotNull {
             val imageUri = it.jsonObject["uri"]?.jsonPrimitive?.contentOrNull
             if (imageUri?.startsWith("/") == true) "http://$serverAddress$imageUri" else imageUri
         }?.firstOrNull()
 
-        // 6. Cache the result.
         if (imageUrl != null) {
             dao.insertArtwork(ArtworkCacheEntry(cacheKey = cacheKey, imageUrl = imageUrl))
             ArtworkProvider.put(cacheKey, imageUrl)
         }
         return imageUrl
+    }
+
+    suspend fun clearArtworkForTrack(trackUri: String) {
+        val cacheKey = "track-art|$trackUri"
+        ArtworkProvider.remove(cacheKey)
+        dao.deleteArtwork(cacheKey)
+    }
+
+    /** Directly stores an artwork URL in both memory and DB cache (used after manual upload). */
+    suspend fun setCachedArtwork(trackUri: String, albumUri: String?, url: String) {
+        val cacheKey = if (!albumUri.isNullOrBlank()) "album-art|$albumUri" else "track-art|$trackUri"
+        dao.insertArtwork(ArtworkCacheEntry(cacheKey = cacheKey, imageUrl = url))
+        ArtworkProvider.put(cacheKey, url)
     }
 
 

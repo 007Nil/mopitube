@@ -2,15 +2,21 @@ package com.nil.mopitube.ui.screens
 
 import android.annotation.SuppressLint
 import android.util.Log
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -42,10 +48,14 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import coil.imageLoader
+import coil.memory.MemoryCache
 import coil.request.ImageRequest
+import com.nil.mopitube.data.UserPreferencesRepository
 import com.nil.mopitube.mopidy.MopidyClient
 import com.nil.mopitube.mopidy.MopidyRepository
 import com.nil.mopitube.mopidy.TrackRepeatMode
+import com.nil.mopitube.mopidy.uploadArtworkToServer
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
@@ -76,6 +86,10 @@ fun PlayerScreen(
     }
     val scope = rememberCoroutineScope()
     val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val context = LocalContext.current
+    val userPrefs = remember { UserPreferencesRepository(context) }
+    val serverHost by userPrefs.serverHost.collectAsState(initial = "")
+
     var queue by remember { mutableStateOf<List<Pair<Int, JsonObject>>>(emptyList()) }
     var tracklistLength by remember { mutableStateOf(0) }
     var currentPosition by remember { mutableStateOf(-1) }
@@ -86,6 +100,46 @@ fun PlayerScreen(
 
     var currentTrack by remember { mutableStateOf<JsonObject?>(null) }
     var artworkUrl by remember { mutableStateOf<String?>(null) }
+    var isUploadingArtwork by remember { mutableStateOf(false) }
+
+    // Photo picker for artwork upload — declared after currentTrack/artworkUrl so the lambda can capture them
+    val artworkPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        Log.d("ArtworkUpload", "Picker returned uri=$uri currentTrack=$currentTrack serverHost=$serverHost")
+        if (uri == null) { Log.w("ArtworkUpload", "uri is null — user cancelled"); return@rememberLauncherForActivityResult }
+        val trackUri = currentTrack?.get("uri")?.jsonPrimitive?.contentOrNull
+        if (trackUri.isNullOrEmpty()) { Log.e("ArtworkUpload", "trackUri is null/empty"); return@rememberLauncherForActivityResult }
+        if (serverHost.isBlank()) { Log.e("ArtworkUpload", "serverHost is blank"); return@rememberLauncherForActivityResult }
+        scope.launch {
+            Log.d("ArtworkUpload", "Uploading artwork for trackUri=$trackUri")
+            isUploadingArtwork = true
+            try {
+                val ok = uploadArtworkToServer(serverHost, trackUri, uri, context)
+                if (ok) {
+                    val albumUri = currentTrack?.get("album")?.jsonObject?.get("uri")?.jsonPrimitive?.contentOrNull
+                        ?: withContext(Dispatchers.IO) { repo.getAlbumUriForTrack(trackUri) }
+                    // Bypass Mopidy re-indexing: serve the image directly from the scan server.
+                    // mopidy-local can't find folder artwork for tracks with no album tag via get_images.
+                    val encodedUri = java.net.URLEncoder.encode(trackUri, "UTF-8")
+                    val coverUrl = "http://$serverHost:9000/cover?track_uri=$encodedUri"
+                    val oldUrl = artworkUrl
+                    @OptIn(coil.annotation.ExperimentalCoilApi::class)
+                    oldUrl?.let { url ->
+                        context.imageLoader.memoryCache?.remove(MemoryCache.Key(url))
+                        context.imageLoader.diskCache?.remove(url)
+                    }
+                    withContext(Dispatchers.IO) { repo.setCachedArtwork(trackUri, albumUri, coverUrl) }
+                    artworkUrl = coverUrl
+                    snackbarHostState.showSnackbar("Artwork updated!")
+                } else {
+                    snackbarHostState.showSnackbar("Upload failed — check server")
+                }
+            } finally {
+                isUploadingArtwork = false
+            }
+        }
+    }
     var isPlaying by remember { mutableStateOf(false) }
     var durationMs by remember { mutableStateOf(0) }
     var positionMs: Int? by remember { mutableStateOf(0) }
@@ -286,22 +340,25 @@ fun PlayerScreen(
             val albumName = track["album"]?.jsonObject?.get("name")?.jsonPrimitive?.contentOrNull ?: ""
             val artUrl = artworkUrl
 
+            @OptIn(ExperimentalFoundationApi::class)
             Box(
                 modifier = Modifier
                     .fillMaxWidth(0.8f)
                     .aspectRatio(1f)
                     .clip(MaterialTheme.shapes.medium)
+                    .combinedClickable(
+                        onClick = {},
+                        onLongClick = {
+                            artworkPickerLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        }
+                    )
                     .pointerInput(Unit) {
                         detectHorizontalDragGestures { _, dragAmount ->
                             when {
-                                // Swiping right to left (next song)
-                                dragAmount < -50 -> {
-                                    scope.launch { repo.next() }
-                                }
-                                // Swiping left to right (previous song)
-                                dragAmount > 50 -> {
-                                    scope.launch { repo.previous() }
-                                }
+                                dragAmount < -50 -> scope.launch { repo.next() }
+                                dragAmount > 50 -> scope.launch { repo.previous() }
                             }
                         }
                     }
@@ -309,7 +366,7 @@ fun PlayerScreen(
                 key(artUrl) {
                     if (artUrl != null) {
                         AsyncImage(
-                            model = ImageRequest.Builder(LocalContext.current).data(artUrl).crossfade(true).build(),
+                            model = ImageRequest.Builder(context).data(artUrl).crossfade(true).build(),
                             contentDescription = "Album Art",
                             modifier = Modifier.fillMaxSize(),
                             contentScale = ContentScale.Crop
@@ -319,6 +376,39 @@ fun PlayerScreen(
                             Icon(Icons.Default.MusicNote, "No Image", modifier = Modifier.size(64.dp), tint = Color.Gray)
                         }
                     }
+                }
+                // Upload progress overlay
+                if (isUploadingArtwork) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator()
+                            Spacer(Modifier.height(8.dp))
+                            Text("Uploading artwork…", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+                // Edit hint overlay — always visible as a subtle cue
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(8.dp)
+                        .background(
+                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
+                            shape = MaterialTheme.shapes.small
+                        )
+                        .padding(4.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Edit,
+                        contentDescription = "Change artwork",
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
                 }
             }
             Spacer(Modifier.height(20.dp))

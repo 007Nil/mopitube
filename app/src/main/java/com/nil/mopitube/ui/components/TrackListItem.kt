@@ -55,11 +55,8 @@ fun TrackListItem(
     var showMenu by remember { mutableStateOf(false) } // State for the dropdown menu
 
     LaunchedEffect(track) {
-        val trackUri = track["uri"]?.jsonPrimitive?.contentOrNull
-        if (!trackUri.isNullOrEmpty()) {
-            withContext(Dispatchers.IO) {
-                imageUrl = repo.getAlbumImages(trackUri).firstOrNull()
-            }
+        withContext(Dispatchers.IO) {
+            imageUrl = repo.findArtwork(track)
         }
     }
 

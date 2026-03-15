@@ -9,6 +9,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -23,7 +24,8 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun SettingsScreen(
     onNavigateToServerSettings: () -> Unit,
-    onNavigateToClientSettings: () -> Unit
+    onNavigateToClientSettings: () -> Unit,
+    onNavigateToAbout: () -> Unit
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize()
@@ -63,6 +65,26 @@ fun SettingsScreen(
                 title = "Client Settings",
                 description = "Cache, sync, and app behavior",
                 onClick = onNavigateToClientSettings
+            )
+        }
+        item {
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+        }
+        item {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "Info",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+            )
+        }
+        item {
+            SettingsItem(
+                icon = Icons.Default.Info,
+                title = "About",
+                description = "Version and app vision",
+                onClick = onNavigateToAbout
             )
         }
     }
