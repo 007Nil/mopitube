@@ -28,31 +28,38 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.QueueMusic
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.TextButton
 import kotlinx.coroutines.Job
 import kotlinx.serialization.json.contentOrNull
 
 @Composable
-@OptIn(ExperimentalFoundationApi::class) // Add this annotation for combinedClickable
+@OptIn(ExperimentalFoundationApi::class)
 fun TrackListItem(
     repo: MopidyRepository,
     track: JsonObject,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    onAddToQueue: (() -> Job)? = null
+    onAddToQueue: (() -> Job)? = null,
+    onDelete: ((trackUri: String) -> Unit)? = null
 ) {
     val trackName = track["name"]?.jsonPrimitive?.contentOrNull ?: "Unknown Track"
+    val trackUri = track["uri"]?.jsonPrimitive?.contentOrNull ?: ""
     var imageUrl by remember { mutableStateOf<String?>(null) }
-    var showMenu by remember { mutableStateOf(false) } // State for the dropdown menu
+    var showMenu by remember { mutableStateOf(false) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
 
     LaunchedEffect(track) {
         withContext(Dispatchers.IO) {
@@ -60,12 +67,35 @@ fun TrackListItem(
         }
     }
 
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Delete song?") },
+            text = {
+                Text("\"$trackName\" will be permanently deleted from the server. This cannot be undone.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDeleteConfirm = false
+                    onDelete?.invoke(trackUri)
+                }) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    val hasMenu = onAddToQueue != null || onDelete != null
+
     ListItem(
         modifier = modifier.combinedClickable(
-            onClick = onClick, // Regular click plays the track
-            onLongClick = {
-                showMenu = true // Long click opens the menu
-            }
+            onClick = onClick,
+            onLongClick = { if (hasMenu) showMenu = true }
         ),
         headlineContent = { Text(trackName) },
         leadingContent = {
@@ -98,40 +128,51 @@ fun TrackListItem(
                 }
             }
         },
-        // Trailing content for the dropdown menu (only shown if onAddToQueue is provided)
-        trailingContent = if (onAddToQueue != null) {
+        trailingContent = if (hasMenu) {
             {
                 Box {
-                    // You can have an icon to indicate a menu is available
                     IconButton(onClick = { showMenu = true }) {
                         Icon(Icons.Default.MoreVert, contentDescription = "More options")
                     }
-
-                    // The DropdownMenu
                     DropdownMenu(
                         expanded = showMenu,
                         onDismissRequest = { showMenu = false }
                     ) {
-                        DropdownMenuItem(
-                            text = { Text("Add to queue") },
-                            onClick = {
-                                // TODO: Implement "Add to queue" logic
-                                showMenu = false
-                            },
-                            leadingIcon = {
-                                Icon(Icons.Default.QueueMusic, contentDescription = "Add to queue")
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Play next") },
-                            onClick = {
-                                // TODO: Implement "Play next" logic
-                                showMenu = false
-                            },
-                            leadingIcon = {
-                                Icon(Icons.Default.PlaylistPlay, contentDescription = "Play next")
-                            }
-                        )
+                        if (onAddToQueue != null) {
+                            DropdownMenuItem(
+                                text = { Text("Add to queue") },
+                                onClick = {
+                                    onAddToQueue()
+                                    showMenu = false
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.QueueMusic, contentDescription = "Add to queue")
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Play next") },
+                                onClick = { showMenu = false },
+                                leadingIcon = {
+                                    Icon(Icons.Default.PlaylistPlay, contentDescription = "Play next")
+                                }
+                            )
+                        }
+                        if (onDelete != null) {
+                            DropdownMenuItem(
+                                text = { Text("Delete song", color = MaterialTheme.colorScheme.error) },
+                                onClick = {
+                                    showMenu = false
+                                    showDeleteConfirm = true
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.DeleteOutline,
+                                        contentDescription = "Delete song",
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            )
+                        }
                     }
                 }
             }

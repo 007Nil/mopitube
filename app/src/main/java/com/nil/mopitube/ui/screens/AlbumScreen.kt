@@ -5,7 +5,6 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,7 +17,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.MusicNote
@@ -26,6 +24,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
@@ -38,8 +37,8 @@ import coil.request.ImageRequest
 import com.nil.mopitube.data.UserPreferencesRepository
 import com.nil.mopitube.mopidy.MopidyRepository
 import com.nil.mopitube.mopidy.uploadArtworkToServer
+import com.nil.mopitube.ui.components.TrackListItem
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
@@ -55,7 +54,7 @@ fun AlbumScreen(
     onTrackClick: (trackUri: String) -> Unit,
     onPlayerClick: () -> Unit
 ) {
-    var tracks by remember { mutableStateOf<List<JsonObject>>(emptyList()) }
+    val tracks = remember { mutableListOf<JsonObject>().toMutableStateList() }
     var albumArtUrl by remember { mutableStateOf<String?>(null) }
     var isUploadingArtwork by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -70,7 +69,9 @@ fun AlbumScreen(
                 Log.e("AlbumScreen", "Lookup for URI $albumUri returned null.")
                 return@withContext
             }
-            tracks = result.jsonArray.mapNotNull { it.jsonObject }
+            val loaded = result.jsonArray.mapNotNull { it.jsonObject }
+            tracks.clear()
+            tracks.addAll(loaded)
             albumArtUrl = tracks.firstOrNull()?.let { repo.findArtwork(it) }
         }
     }
@@ -92,7 +93,6 @@ fun AlbumScreen(
                         context.imageLoader.memoryCache?.remove(MemoryCache.Key(url))
                         context.imageLoader.diskCache?.remove(url)
                     }
-                    // Bypass Mopidy re-indexing: serve image directly from scan server
                     val encodedUri = java.net.URLEncoder.encode(firstTrackUri, "UTF-8")
                     val coverUrl = "http://$serverHost:9000/cover?track_uri=$encodedUri"
                     withContext(Dispatchers.IO) {
@@ -116,7 +116,6 @@ fun AlbumScreen(
         }
     } else {
         LazyColumn(modifier = Modifier.fillMaxSize()) {
-            // Album art header with edit button
             item {
                 Box(
                     modifier = Modifier
@@ -148,7 +147,6 @@ fun AlbumScreen(
                             }
                         }
                     }
-                    // Upload progress overlay
                     if (isUploadingArtwork) {
                         Box(
                             modifier = Modifier
@@ -186,71 +184,28 @@ fun AlbumScreen(
                 }
             }
 
-            items(tracks) { track ->
+            items(tracks, key = { it["uri"]?.jsonPrimitive?.contentOrNull ?: "" }) { track ->
                 TrackListItem(
                     repo = repo,
                     track = track,
                     onClick = {
                         val trackUri = track["uri"]?.jsonPrimitive?.contentOrNull ?: ""
                         if (trackUri.isNotEmpty()) onTrackClick(trackUri)
+                    },
+                    onDelete = { trackUri ->
+                        scope.launch {
+                            val ok = withContext(Dispatchers.IO) {
+                                repo.deleteTrack(serverHost, trackUri)
+                            }
+                            if (ok) {
+                                tracks.remove(track)
+                            } else {
+                                Toast.makeText(context, "Delete failed — check server", Toast.LENGTH_SHORT).show()
+                            }
+                        }
                     }
                 )
             }
         }
     }
-}
-
-@Composable
-fun TrackListItem(
-    repo: MopidyRepository,
-    track: JsonObject,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val trackName = track["name"]?.jsonPrimitive?.contentOrNull ?: "Unknown Track"
-    var imageUrl by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(track) {
-        val trackUri = track["uri"]?.jsonPrimitive?.contentOrNull
-        if (!trackUri.isNullOrEmpty()) {
-            withContext(Dispatchers.IO) {
-                imageUrl = repo.getAlbumImages(trackUri).firstOrNull()
-            }
-        }
-    }
-
-    ListItem(
-        modifier = modifier.clickable(onClick = onClick),
-        headlineContent = { Text(trackName) },
-        leadingContent = {
-            Surface(
-                shadowElevation = 2.dp,
-                shape = RoundedCornerShape(4.dp),
-                modifier = Modifier.size(40.dp)
-            ) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (imageUrl != null) {
-                        AsyncImage(
-                            model = ImageRequest.Builder(LocalContext.current)
-                                .data(imageUrl)
-                                .crossfade(true)
-                                .build(),
-                            contentDescription = trackName,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    } else {
-                        Icon(
-                            imageVector = Icons.Default.MusicNote,
-                            contentDescription = "No Artwork",
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-                }
-            }
-        }
-    )
 }
