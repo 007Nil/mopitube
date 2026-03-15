@@ -48,6 +48,9 @@ interface MopitubeDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertArtwork(entry: ArtworkCacheEntry)
+
+    @Query("DELETE FROM artwork_cache WHERE cacheKey = :key")
+    suspend fun deleteArtwork(key: String)
     // ===== NEW: Method to cache tracks =====
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAllTracks(tracks: List<Track>)
@@ -72,6 +75,9 @@ interface MopitubeDao {
             name ASC
     """)
     suspend fun searchTracks(query: String): List<Track>
+
+    @Query("SELECT * FROM tracks WHERE uri = :uri LIMIT 1")
+    suspend fun getTrackByUri(uri: String): Track?
 
     // Smart queue: random tracks with the same genre, excluding already-queued URIs
     @Query("SELECT * FROM tracks WHERE genre = :genre AND uri NOT IN (:excludeUris) ORDER BY RANDOM() LIMIT :limit")
