@@ -557,6 +557,7 @@ fun PlayerScreen(
                                 repo.removeFromListenLater(trackUri)
                             } else {
                                 repo.saveForLater(track, pos)
+                                repo.pause()
                             }
                             isInListenLater = !isInListenLater
                         }
