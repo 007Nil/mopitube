@@ -44,7 +44,8 @@ private fun SectionHeader(title: String) {
 fun SearchScreen(
     repo: MopidyRepository,
     onAlbumClick: (String) -> Unit,
-    onTrackClick: (String) -> Unit
+    onTrackClick: (String) -> Unit,
+    onArtistClick: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     var query by remember { mutableStateOf("") }
@@ -168,15 +169,10 @@ fun SearchScreen(
                         SectionHeader("Artists")
                     }
                     items(artists) { artist ->
+                        val name = artist["name"]?.jsonPrimitive?.contentOrNull
                         ArtistSearchResult(
                             artist = artist,
-                            onClick = {
-                                Toast.makeText(
-                                    context,
-                                    "Artist details coming soon",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
+                            onClick = { if (name != null) onArtistClick(name) }
                         )
                     }
                 }

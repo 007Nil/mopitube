@@ -4,23 +4,41 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import com.nil.mopitube.mopidy.MopidyRepository
 import com.nil.mopitube.ui.components.ArtistListItem
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ArtistsScreen(
     repo: MopidyRepository,
@@ -28,34 +46,78 @@ fun ArtistsScreen(
 ) {
     var artists by remember { mutableStateOf<List<JsonObject>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
+    var isSearchActive by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
 
-    LaunchedEffect(Unit) {
-        isLoading = true
-        withContext(Dispatchers.IO) {
-            artists = repo.getAllArtists()
+    val filteredArtists = remember(artists, searchQuery) {
+        if (searchQuery.isBlank()) artists
+        else artists.filter { artist ->
+            val name = artist["name"]?.jsonPrimitive?.content ?: ""
+            name.contains(searchQuery, ignoreCase = true)
         }
-        isLoading = false
     }
 
-    if (isLoading) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator()
+    fun loadArtists(coroutineScope: CoroutineScope, forceRefresh: Boolean = false) {
+        coroutineScope.launch {
+            isLoading = true
+            withContext(Dispatchers.IO) {
+                if (forceRefresh) repo.refreshAllTracksFromServer()
+                artists = repo.getAllArtists()
+            }
+            isLoading = false
         }
-    } else {
-        if (artists.isEmpty()) {
+    }
+
+    LaunchedEffect(Unit) { loadArtists(scope) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Artists") },
+                actions = {
+                    IconButton(onClick = { isSearchActive = !isSearchActive; if (!isSearchActive) searchQuery = "" }) {
+                        Icon(if (isSearchActive) Icons.Default.Close else Icons.Default.Search, contentDescription = "Search")
+                    }
+                    IconButton(onClick = { loadArtists(scope, forceRefresh = true) }) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                    }
+                }
+            )
+        }
+    ) { paddingValues ->
+        if (isLoading) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("You have no artists in your library.")
+                CircularProgressIndicator()
+            }
+        } else if (artists.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("No artists found in your library.")
             }
         } else {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
+                contentPadding = paddingValues
             ) {
-                items(artists) { artist ->
-                    val uri = artist["uri"]?.jsonPrimitive?.content
+                if (isSearchActive) {
+                    item {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            placeholder = { Text("Search artists...") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
+                        )
+                    }
+                }
+                items(filteredArtists) { artist ->
+                    val name = artist["name"]?.jsonPrimitive?.content ?: return@items
                     ArtistListItem(
                         artist = artist,
-                        onClick = { uri?.let { onArtistClick(it) } }
+                        repo = repo,
+                        onClick = { onArtistClick(name) }
                     )
+                    HorizontalDivider()
                 }
             }
         }

@@ -43,6 +43,9 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.net.URLDecoder
 import java.net.URLEncoder
@@ -105,6 +108,13 @@ fun AppNav(
                     }
                 }
                 appNavViewModel.hasNavigatedFromStartup = true
+                // Start PlaybackService so notification/lock screen controls are always active
+                val serviceIntent = Intent(context, PlaybackService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(serviceIntent)
+                } else {
+                    context.startService(serviceIntent)
+                }
             }
             // Connection lost after we've been using the app → wait before showing reconnect screen
             // This grace period allows automatic reconnection to succeed (e.g., app foregrounding)
@@ -130,6 +140,8 @@ fun AppNav(
         drawerContent = {
             AppDrawer(
                 currentRoute = currentRoute ?: "home",
+                isDarkMode = appNavViewModel.isDarkMode,
+                onToggleDarkMode = { appNavViewModel.toggleDarkMode() },
                 onNavigate = { route ->
                     scope.launch { drawerState.close() }
                     navController.navigate(route) {
@@ -157,11 +169,14 @@ fun AppNav(
                                 currentRoute == "server_settings" -> "Server Settings"
                                 currentRoute == "client_settings" -> "Client Settings"
                                 currentRoute == "about" -> "About"
+                                currentRoute == "listen_later" -> "Listen Later"
                                 currentRoute == "songs" -> "Songs"
                                 currentRoute == "albums" -> "Albums"
                                 currentRoute == "artists" -> "Artists"
-                                currentRoute?.startsWith("playlist") == true -> "Playlist"
+                                currentRoute == "playlists" -> "Playlists"
+                                currentRoute?.startsWith("playlist/") == true -> "Playlist"
                                 currentRoute?.startsWith("album") == true -> "Album"
+                                currentRoute?.startsWith("artist") == true -> "Artist"
                                 else -> ""
                             }
                             Text(title)
@@ -260,6 +275,8 @@ fun AppNav(
                 composable("player") {
                     PlayerScreen(
                         client = client,
+                        pendingSeekMs = appNavViewModel.pendingSeekMs,
+                        onSeekConsumed = { appNavViewModel.pendingSeekMs = 0 },
                         onBack = { navController.navigateUp() })
                 }
 
@@ -344,7 +361,8 @@ fun AppNav(
                             onLikedSongsClick = { navController.navigate("liked_songs") },
                             onSongsClick = { navController.navigate("songs") },
                             onAlbumsClick = { navController.navigate("albums") },
-                            onArtistsClick = { navController.navigate("artists") }
+                            onArtistsClick = { navController.navigate("artists") },
+                            onPlaylistsClick = { navController.navigate("playlists") }
                         )
                     }
                 }
@@ -354,7 +372,8 @@ fun AppNav(
                         SearchScreen(
                             repo = repo,
                             onAlbumClick = { uri -> navController.navigate("album/${URLEncoder.encode(uri, "UTF-8")}") },
-                            onTrackClick = onTrackClick
+                            onTrackClick = onTrackClick,
+                            onArtistClick = { name -> navController.navigate("artist/${URLEncoder.encode(name, "UTF-8")}") }
                         )
                     }
                 }
@@ -379,6 +398,18 @@ fun AppNav(
                     }
                 }
 
+                composable("listen_later") {
+                    client.repo?.let { repo ->
+                        ListenLaterScreen(
+                            repo = repo,
+                            onResume = { uri, positionMs ->
+                                appNavViewModel.pendingSeekMs = positionMs
+                                onTrackClick(uri)
+                            }
+                        )
+                    }
+                }
+
                 composable("songs") {
                     client.repo?.let { repo ->
                         SongsScreen(repo = repo, onTrackClick = onTrackClick)
@@ -399,8 +430,67 @@ fun AppNav(
                     client.repo?.let { repo ->
                         ArtistsScreen(
                             repo = repo,
-                            onArtistClick = { uri -> Log.d("AppNav", "Artist clicked: $uri. Navigation not implemented yet.") }
+                            onArtistClick = { name ->
+                                navController.navigate("artist/${URLEncoder.encode(name, "UTF-8")}")
+                            }
                         )
+                    }
+                }
+
+                composable("playlists") {
+                    client.repo?.let { repo ->
+                        PlaylistsScreen(
+                            repo = repo,
+                            onPlaylistClick = { uri -> navController.navigate("playlist/${URLEncoder.encode(uri, "UTF-8")}") },
+                            onPlaylistLongPress = { uri ->
+                                scope.launch {
+                                    try {
+                                        val playlist = withContext(Dispatchers.IO) { repo.getPlaylist(uri) }
+                                        val tracksArray = playlist?.get("tracks")?.jsonArray
+                                        val trackUris: List<String> = tracksArray
+                                            ?.mapNotNull { elem ->
+                                                elem.jsonObject["uri"]?.jsonPrimitive?.contentOrNull
+                                            } ?: emptyList()
+                                        if (trackUris.isEmpty()) return@launch
+
+                                        withContext(Dispatchers.IO) {
+                                            repo.clearTracklist()
+                                            val urisArray = buildJsonArray {
+                                                trackUris.forEach { u -> add(JsonPrimitive(u)) }
+                                            }
+                                            val params = buildJsonObject { put("uris", urisArray) }
+                                            repo.rpc.call("core.tracklist.add", params)
+                                            repo.play()
+                                        }
+                                        client.playlistModeTrackCount = trackUris.size
+                                        navController.navigate("player")
+                                    } catch (e: Exception) {
+                                        Log.e("AppNav", "Failed to play playlist", e)
+                                    }
+                                }
+                            }
+                        )
+                    }
+                }
+
+                composable(
+                    "artist/{artistName}",
+                    arguments = listOf(navArgument("artistName") { type = NavType.StringType })
+                ) { backStackEntry ->
+                    client.repo?.let { repo ->
+                        val name = backStackEntry.arguments?.getString("artistName")
+                            ?.let { URLDecoder.decode(it, "UTF-8") }
+                        if (name != null) {
+                            ArtistDetailScreen(
+                                repo = repo,
+                                artistName = name,
+                                onAlbumClick = { uri ->
+                                    navController.navigate("album/${URLEncoder.encode(uri, "UTF-8")}")
+                                },
+                                onPlayAlbum = onPlayAlbum,
+                                onTrackClick = onTrackClick
+                            )
+                        }
                     }
                 }
 

@@ -35,11 +35,16 @@
         <service
             android:name=".PlaybackService"
             android:foregroundServiceType="mediaPlayback"
+            android:exported="false">
+        </service>
+
+        <!-- Routes hardware media buttons and lock screen controls to our MediaSession -->
+        <receiver android:name="androidx.media.session.MediaButtonReceiver"
             android:exported="true">
             <intent-filter>
-                <action android:name="androidx.media3.session.MediaSessionService"/>
+                <action android:name="android.intent.action.MEDIA_BUTTON"/>
             </intent-filter>
-        </service>
+        </receiver>
 
 
     </application>

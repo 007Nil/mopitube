@@ -33,6 +33,9 @@ class MopidyClient(private val context: Context) {
         private set
     var repo by mutableStateOf<MopidyRepository?>(null)
         private set
+    // When > 0, PlayerScreen is in playlist mode and will not auto-append random tracks
+    // until the current position has passed this track count.
+    var playlistModeTrackCount by mutableStateOf(0)
     private var webSocket: MopidyWebSocket? = null
     fun updateServerConfig(host: String, port: String) {
         this.host = host

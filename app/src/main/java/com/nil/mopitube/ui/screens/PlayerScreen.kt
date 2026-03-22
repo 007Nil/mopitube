@@ -26,7 +26,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.Bookmark
+import androidx.compose.material.icons.outlined.PlaylistAdd
 import androidx.compose.material.icons.outlined.PlaylistPlay
+import com.nil.mopitube.ui.components.AddToPlaylistDialog
 import androidx.compose.material.icons.outlined.ThumbDown
 import androidx.compose.material.icons.outlined.ThumbUp
 import androidx.compose.material3.*
@@ -73,6 +76,8 @@ import kotlin.math.sin
 @Composable
 fun PlayerScreen(
     client: MopidyClient,
+    pendingSeekMs: Int = 0,
+    onSeekConsumed: () -> Unit = {},
     onBack: () -> Unit
 ) {
 
@@ -148,6 +153,8 @@ fun PlayerScreen(
     var pendingSeekPosition by remember { mutableStateOf(0f) }
     var isLiked by remember { mutableStateOf(false) }
     var isDisliked by remember { mutableStateOf(false) }
+    var isInListenLater by remember { mutableStateOf(false) }
+    var showPlaylistDialog by remember { mutableStateOf(false) }
     var volume by remember { mutableStateOf(100) }
     var isVolumeSliderVisible by remember { mutableStateOf(false) }
     var repeatMode by remember { mutableStateOf(TrackRepeatMode.OFF) }
@@ -231,8 +238,12 @@ fun PlayerScreen(
                             // Auto-append when reaching last 3 tracks (with queue cap at 100 items)
                             if (currentPosition != -1 && tracklistLength > 0 && !isAppendingTracks) {
                                 val remaining = tracklistLength - currentPosition - 1
+                                val playlistEnd = client.playlistModeTrackCount
+                                // In playlist mode, hold off until we've reached the last playlist track
+                                val pastPlaylist = playlistEnd == 0 || currentPosition >= playlistEnd - 1
                                 // Only append if queue is low AND below the 100-item cap
-                                if (remaining <= 3 && tracklistLength < 100) {
+                                if (pastPlaylist && remaining <= 3 && tracklistLength < 100) {
+                                    client.playlistModeTrackCount = 0 // exit playlist mode
                                     isAppendingTracks = true
                                     try {
                                         Log.d("PlayerScreen", "Queue low ($remaining remaining, $tracklistLength total). Appending more tracks")
@@ -267,14 +278,24 @@ fun PlayerScreen(
         artworkUrl = null
         isLiked = false
         isDisliked = false
+        isInListenLater = false
         val track = currentTrack ?: return@LaunchedEffect
         val trackUri = track["uri"]?.jsonPrimitive?.contentOrNull
         if (!trackUri.isNullOrEmpty()) {
             withContext(Dispatchers.IO) {
                 isLiked = repo.isTrackLiked(trackUri)
                 isDisliked = repo.isTrackDisliked(trackUri)
+                isInListenLater = repo.isInListenLater(trackUri)
                 artworkUrl = repo.findArtwork(track)
             }
+        }
+    }
+
+    // Seek to resume position after playback starts
+    LaunchedEffect(isPlaying, pendingSeekMs) {
+        if (isPlaying && pendingSeekMs > 0) {
+            withContext(Dispatchers.IO) { repo.seek(pendingSeekMs) }
+            onSeekConsumed()
         }
     }
 
@@ -461,7 +482,21 @@ fun PlayerScreen(
                     )
                 }
                 IconButton(onClick = { scope.launch { repo.previous() } }) { Icon(Icons.Filled.SkipPrevious, "Previous", modifier = Modifier.size(36.dp)) }
-                IconButton(onClick = { scope.launch { if (isPlaying) repo.pause() else repo.play() } }) { Icon(if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, "Play/Pause", modifier = Modifier.size(48.dp)) }
+                IconButton(onClick = {
+                    scope.launch {
+                        if (isPlaying) {
+                            repo.pause()
+                            // Auto-update Listen Later position on every pause
+                            val track = currentTrack
+                            val pos = positionMs ?: 0
+                            if (isInListenLater && track != null) {
+                                withContext(Dispatchers.IO) { repo.saveForLater(track, pos) }
+                            }
+                        } else {
+                            repo.play()
+                        }
+                    }
+                }) { Icon(if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, "Play/Pause", modifier = Modifier.size(48.dp)) }
                 IconButton(onClick = { scope.launch { repo.next() } }) { Icon(Icons.Filled.SkipNext, "Next", modifier = Modifier.size(36.dp)) }
                 IconButton(onClick = {
                     scope.launch {
@@ -525,13 +560,63 @@ fun PlayerScreen(
                     )
                 }
             }
-            Button(onClick = { showBottomSheet = true }) {
-                Icon(Icons.Outlined.PlaylistPlay, contentDescription = "Up Next", modifier = Modifier.padding(end = 8.dp))
-                Text("Up Next")
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Button(onClick = { showBottomSheet = true }) {
+                    Icon(Icons.Outlined.PlaylistPlay, contentDescription = "Up Next", modifier = Modifier.padding(end = 8.dp))
+                    Text("Up Next")
+                }
+                OutlinedButton(onClick = {
+                    scope.launch {
+                        val track = currentTrack ?: return@launch
+                        val trackUri = track["uri"]?.jsonPrimitive?.contentOrNull ?: return@launch
+                        val pos = positionMs ?: 0
+                        withContext(Dispatchers.IO) {
+                            if (isInListenLater) {
+                                repo.removeFromListenLater(trackUri)
+                            } else {
+                                repo.saveForLater(track, pos)
+                                repo.pause()
+                            }
+                            isInListenLater = !isInListenLater
+                        }
+                        val msg = if (isInListenLater) "Saved for later at ${formatMs(pos)}" else "Removed from Listen Later"
+                        snackbarHostState.showSnackbar(msg)
+                    }
+                }) {
+                    Icon(
+                        imageVector = if (isInListenLater) Icons.Filled.Bookmark else Icons.Outlined.Bookmark,
+                        contentDescription = "Save for Later",
+                        tint = if (isInListenLater) MaterialTheme.colorScheme.primary else LocalContentColor.current,
+                        modifier = Modifier.padding(end = 4.dp)
+                    )
+                    Text(if (isInListenLater) "Saved" else "Later")
+                }
+                OutlinedButton(onClick = { showPlaylistDialog = true }) {
+                    Icon(
+                        Icons.Outlined.PlaylistAdd,
+                        contentDescription = "Add to playlist",
+                        modifier = Modifier.padding(end = 4.dp)
+                    )
+                    Text("Playlist")
+                }
             }
 
             Spacer(Modifier.height(20.dp)) // Add some space at the very bottom
         }
+    }
+
+    // Add to Playlist dialog
+    if (showPlaylistDialog) {
+        val trackUri = currentTrack?.get("uri")?.jsonPrimitive?.contentOrNull ?: ""
+        AddToPlaylistDialog(
+            repo = repo,
+            trackUri = trackUri,
+            onDismiss = { showPlaylistDialog = false },
+            onResult = { message -> scope.launch { snackbarHostState.showSnackbar(message) } }
+        )
     }
 
     // The Modal Bottom Sheet for "Up Next" and "Lyrics"

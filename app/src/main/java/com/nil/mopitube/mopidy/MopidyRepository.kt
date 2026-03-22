@@ -5,6 +5,7 @@ import android.util.Log
 import com.nil.mopitube.database.ArtworkCacheEntry
 import com.nil.mopitube.database.DislikedTrack
 import com.nil.mopitube.database.LikedTrack
+import com.nil.mopitube.database.ListenLaterEntry
 import com.nil.mopitube.database.MopitubeDatabase // Import the CORRECT database
 import com.nil.mopitube.database.PlayHistoryEntry
 import com.nil.mopitube.database.Track
@@ -241,7 +242,43 @@ class MopidyRepository(
         return allTracks
             .flatMap { it["artists"]?.jsonArray ?: emptyList() }
             .mapNotNull { it.jsonObject }
-            .distinctBy { it["uri"]?.jsonPrimitive?.content }
+            .distinctBy { it["name"]?.jsonPrimitive?.contentOrNull }
+            .sortedBy { it["name"]?.jsonPrimitive?.contentOrNull ?: "" }
+    }
+
+    suspend fun getAlbumsByArtist(artistName: String): List<JsonObject> {
+        val allTracks = getAllTracks()
+        return allTracks
+            .filter { track ->
+                track["artists"]?.jsonArray?.any {
+                    it.jsonObject["name"]?.jsonPrimitive?.contentOrNull == artistName
+                } == true
+            }
+            .mapNotNull { it["album"]?.jsonObject }
+            .distinctBy { it["uri"]?.jsonPrimitive?.contentOrNull }
+    }
+
+    suspend fun getTracksByArtistName(artistName: String): List<JsonObject> {
+        val allTracks = getAllTracks()
+        return allTracks.filter { track ->
+            track["artists"]?.jsonArray?.any {
+                it.jsonObject["name"]?.jsonPrimitive?.contentOrNull == artistName
+            } == true
+        }
+    }
+
+    suspend fun findArtistArtwork(artistName: String): String? {
+        val cacheKey = "artist-art|$artistName"
+        ArtworkProvider.get(cacheKey)?.let { return it }
+        dao.getArtwork(cacheKey)?.let {
+            ArtworkProvider.put(cacheKey, it.imageUrl)
+            return it.imageUrl
+        }
+        val urls = MusicBrainzClient().getArtistArtworkUrls(artistName)
+        val url = urls.firstOrNull() ?: return null
+        dao.insertArtwork(ArtworkCacheEntry(cacheKey = cacheKey, imageUrl = url))
+        ArtworkProvider.put(cacheKey, url)
+        return url
     }
 
     suspend fun clearTracklist() { rpc.call("core.tracklist.clear") }
@@ -358,6 +395,60 @@ class MopidyRepository(
     suspend fun getPlaylists(): List<JsonObject> {
         val result = rpc.call("core.playlists.as_list")
         return result?.jsonArray?.mapNotNull { it.jsonObject } ?: emptyList()
+    }
+
+    suspend fun createPlaylist(name: String): JsonObject? {
+        val params = buildJsonObject { put("name", name) }
+        return rpc.call("core.playlists.create", params)?.jsonObject
+    }
+
+    suspend fun getPlaylist(uri: String): JsonObject? {
+        val params = buildJsonObject { put("uri", uri) }
+        return rpc.call("core.playlists.lookup", params)?.jsonObject
+    }
+
+    suspend fun removeTrackFromPlaylist(playlistUri: String, trackUri: String): Boolean {
+        val params = buildJsonObject { put("uri", playlistUri) }
+        val playlist = rpc.call("core.playlists.lookup", params)?.jsonObject ?: return false
+        val existingTracks = playlist["tracks"]?.jsonArray ?: return false
+        val updated = buildJsonObject {
+            put("__model__", "Playlist")
+            put("uri", playlistUri)
+            playlist["name"]?.let { put("name", it) }
+            put("tracks", buildJsonArray {
+                existingTracks.forEach { track ->
+                    val uri = track.jsonObject["uri"]?.jsonPrimitive?.contentOrNull
+                    if (uri != trackUri) add(track)
+                }
+            })
+        }
+        val saveParams = buildJsonObject { put("playlist", updated) }
+        return rpc.call("core.playlists.save", saveParams) != null
+    }
+
+    suspend fun deletePlaylist(uri: String): Boolean {
+        val params = buildJsonObject { put("uri", uri) }
+        return rpc.call("core.playlists.delete", params) != null
+    }
+
+    suspend fun addTrackToPlaylist(playlistUri: String, trackUri: String): Boolean {
+        val params = buildJsonObject { put("uri", playlistUri) }
+        val playlist = rpc.call("core.playlists.lookup", params)?.jsonObject ?: return false
+        val existingTracks = playlist["tracks"]?.jsonArray ?: buildJsonArray {}
+        val updated = buildJsonObject {
+            put("__model__", "Playlist")
+            put("uri", playlistUri)
+            playlist["name"]?.let { put("name", it) }
+            put("tracks", buildJsonArray {
+                existingTracks.forEach { add(it) }
+                add(buildJsonObject {
+                    put("__model__", "Track")
+                    put("uri", trackUri)
+                })
+            })
+        }
+        val saveParams = buildJsonObject { put("playlist", updated) }
+        return rpc.call("core.playlists.save", saveParams) != null
     }
     suspend fun getRecentlyAddedAlbums(): List<JsonObject> {
         val result = rpc.call("core.library.browse", buildJsonObject { put("uri", JsonNull) })
@@ -746,6 +837,21 @@ class MopidyRepository(
         return true
     }
 
+    // --- Listen Later ---
 
+    suspend fun saveForLater(track: JsonObject, positionMs: Int) {
+        val uri = track["uri"]?.jsonPrimitive?.contentOrNull ?: return
+        val title = track["name"]?.jsonPrimitive?.contentOrNull ?: "Unknown"
+        val artist = track["artists"]?.jsonArray?.firstOrNull()
+            ?.jsonObject?.get("name")?.jsonPrimitive?.contentOrNull
+        val albumUri = track["album"]?.jsonObject?.get("uri")?.jsonPrimitive?.contentOrNull
+        dao.saveListenLater(ListenLaterEntry(uri, title, artist, albumUri, positionMs))
+    }
+
+    suspend fun getListenLaterTracks(): List<ListenLaterEntry> = dao.getAllListenLater()
+
+    suspend fun removeFromListenLater(uri: String) = dao.deleteListenLater(uri)
+
+    suspend fun isInListenLater(uri: String): Boolean = dao.getListenLaterByUri(uri) != null
 }
 
