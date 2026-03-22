@@ -144,6 +144,9 @@ interface MopitubeDao {
     """)
     suspend fun getMostPlayed(limit: Int): List<TrackPlayCount>
 
+    @Query("SELECT * FROM play_history")
+    suspend fun getAllPlayHistory(): List<PlayHistoryEntry>
+
     @Query("DELETE FROM play_history WHERE timestamp < :cutoffTimestamp")
     suspend fun deletePlayHistoryOlderThan(cutoffTimestamp: Long)
 
