@@ -26,6 +26,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.PlaylistPlay
 import androidx.compose.material.icons.outlined.ThumbDown
 import androidx.compose.material.icons.outlined.ThumbUp
@@ -73,6 +74,8 @@ import kotlin.math.sin
 @Composable
 fun PlayerScreen(
     client: MopidyClient,
+    pendingSeekMs: Int = 0,
+    onSeekConsumed: () -> Unit = {},
     onBack: () -> Unit
 ) {
 
@@ -148,6 +151,7 @@ fun PlayerScreen(
     var pendingSeekPosition by remember { mutableStateOf(0f) }
     var isLiked by remember { mutableStateOf(false) }
     var isDisliked by remember { mutableStateOf(false) }
+    var isInListenLater by remember { mutableStateOf(false) }
     var volume by remember { mutableStateOf(100) }
     var isVolumeSliderVisible by remember { mutableStateOf(false) }
     var repeatMode by remember { mutableStateOf(TrackRepeatMode.OFF) }
@@ -267,14 +271,24 @@ fun PlayerScreen(
         artworkUrl = null
         isLiked = false
         isDisliked = false
+        isInListenLater = false
         val track = currentTrack ?: return@LaunchedEffect
         val trackUri = track["uri"]?.jsonPrimitive?.contentOrNull
         if (!trackUri.isNullOrEmpty()) {
             withContext(Dispatchers.IO) {
                 isLiked = repo.isTrackLiked(trackUri)
                 isDisliked = repo.isTrackDisliked(trackUri)
+                isInListenLater = repo.isInListenLater(trackUri)
                 artworkUrl = repo.findArtwork(track)
             }
+        }
+    }
+
+    // Seek to resume position after playback starts
+    LaunchedEffect(isPlaying, pendingSeekMs) {
+        if (isPlaying && pendingSeekMs > 0) {
+            withContext(Dispatchers.IO) { repo.seek(pendingSeekMs) }
+            onSeekConsumed()
         }
     }
 
@@ -525,9 +539,40 @@ fun PlayerScreen(
                     )
                 }
             }
-            Button(onClick = { showBottomSheet = true }) {
-                Icon(Icons.Outlined.PlaylistPlay, contentDescription = "Up Next", modifier = Modifier.padding(end = 8.dp))
-                Text("Up Next")
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Button(onClick = { showBottomSheet = true }) {
+                    Icon(Icons.Outlined.PlaylistPlay, contentDescription = "Up Next", modifier = Modifier.padding(end = 8.dp))
+                    Text("Up Next")
+                }
+                OutlinedButton(onClick = {
+                    scope.launch {
+                        val track = currentTrack ?: return@launch
+                        val trackUri = track["uri"]?.jsonPrimitive?.contentOrNull ?: return@launch
+                        val pos = positionMs ?: 0
+                        withContext(Dispatchers.IO) {
+                            if (isInListenLater) {
+                                repo.removeFromListenLater(trackUri)
+                            } else {
+                                repo.saveForLater(track, pos)
+                                repo.pause()
+                            }
+                            isInListenLater = !isInListenLater
+                        }
+                        val msg = if (isInListenLater) "Saved for later at ${formatMs(pos)}" else "Removed from Listen Later"
+                        snackbarHostState.showSnackbar(msg)
+                    }
+                }) {
+                    Icon(
+                        imageVector = if (isInListenLater) Icons.Filled.Bookmark else Icons.Outlined.Bookmark,
+                        contentDescription = "Save for Later",
+                        tint = if (isInListenLater) MaterialTheme.colorScheme.primary else LocalContentColor.current,
+                        modifier = Modifier.padding(end = 4.dp)
+                    )
+                    Text(if (isInListenLater) "Saved" else "Later")
+                }
             }
 
             Spacer(Modifier.height(20.dp)) // Add some space at the very bottom

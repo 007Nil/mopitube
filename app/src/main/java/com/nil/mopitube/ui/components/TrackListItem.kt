@@ -28,6 +28,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
@@ -42,7 +44,9 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.contentOrNull
 
 @Composable
@@ -60,6 +64,14 @@ fun TrackListItem(
     var imageUrl by remember { mutableStateOf<String?>(null) }
     var showMenu by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var isInListenLater by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(trackUri) {
+        if (trackUri.isNotEmpty()) {
+            isInListenLater = withContext(Dispatchers.IO) { repo.isInListenLater(trackUri) }
+        }
+    }
 
     LaunchedEffect(track) {
         withContext(Dispatchers.IO) {
@@ -90,7 +102,7 @@ fun TrackListItem(
         )
     }
 
-    val hasMenu = onAddToQueue != null || onDelete != null
+    val hasMenu = true
 
     ListItem(
         modifier = modifier.combinedClickable(
@@ -157,6 +169,27 @@ fun TrackListItem(
                                 }
                             )
                         }
+                        DropdownMenuItem(
+                            text = { Text(if (isInListenLater) "Remove from Later" else "Save for Later") },
+                            onClick = {
+                                showMenu = false
+                                scope.launch {
+                                    if (isInListenLater) {
+                                        withContext(Dispatchers.IO) { repo.removeFromListenLater(trackUri) }
+                                    } else {
+                                        withContext(Dispatchers.IO) { repo.saveForLater(track, 0) }
+                                    }
+                                    isInListenLater = !isInListenLater
+                                }
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    if (isInListenLater) Icons.Default.Bookmark else Icons.Default.BookmarkBorder,
+                                    contentDescription = "Save for Later",
+                                    tint = if (isInListenLater) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        )
                         if (onDelete != null) {
                             DropdownMenuItem(
                                 text = { Text("Delete song", color = MaterialTheme.colorScheme.error) },

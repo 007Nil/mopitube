@@ -24,6 +24,7 @@ class AppNavViewModel(application: Application) : AndroidViewModel(application) 
         App.mopidyClient = it
     }
     var hasNavigatedFromStartup by mutableStateOf(false)
+    var pendingSeekMs by mutableStateOf(0)
     // The ViewModel will automatically be cleared when it's no longer needed (e.g., app is closed),
     // and its onCleared() method is the perfect place to shut down the client connection.
     override fun onCleared() {
