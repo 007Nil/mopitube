@@ -31,8 +31,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.PlaylistRemove
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material3.AlertDialog
@@ -42,6 +44,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.rememberCoroutineScope
@@ -56,14 +59,17 @@ fun TrackListItem(
     track: JsonObject,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    snackbarHostState: SnackbarHostState? = null,
     onAddToQueue: (() -> Job)? = null,
-    onDelete: ((trackUri: String) -> Unit)? = null
+    onDelete: ((trackUri: String) -> Unit)? = null,
+    onRemoveFromPlaylist: ((trackUri: String) -> Unit)? = null
 ) {
     val trackName = track["name"]?.jsonPrimitive?.contentOrNull ?: "Unknown Track"
     val trackUri = track["uri"]?.jsonPrimitive?.contentOrNull ?: ""
     var imageUrl by remember { mutableStateOf<String?>(null) }
     var showMenu by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showPlaylistDialog by remember { mutableStateOf(false) }
     var isInListenLater by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
@@ -98,6 +104,17 @@ fun TrackListItem(
                 TextButton(onClick = { showDeleteConfirm = false }) {
                     Text("Cancel")
                 }
+            }
+        )
+    }
+
+    if (showPlaylistDialog) {
+        AddToPlaylistDialog(
+            repo = repo,
+            trackUri = trackUri,
+            onDismiss = { showPlaylistDialog = false },
+            onResult = { message ->
+                scope.launch { snackbarHostState?.showSnackbar(message) }
             }
         )
     }
@@ -190,6 +207,32 @@ fun TrackListItem(
                                 )
                             }
                         )
+                        DropdownMenuItem(
+                            text = { Text("Add to playlist") },
+                            onClick = {
+                                showMenu = false
+                                showPlaylistDialog = true
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Default.PlaylistAdd, contentDescription = "Add to playlist")
+                            }
+                        )
+                        if (onRemoveFromPlaylist != null) {
+                            DropdownMenuItem(
+                                text = { Text("Remove from playlist", color = MaterialTheme.colorScheme.error) },
+                                onClick = {
+                                    showMenu = false
+                                    onRemoveFromPlaylist(trackUri)
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.PlaylistRemove,
+                                        contentDescription = "Remove from playlist",
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            )
+                        }
                         if (onDelete != null) {
                             DropdownMenuItem(
                                 text = { Text("Delete song", color = MaterialTheme.colorScheme.error) },

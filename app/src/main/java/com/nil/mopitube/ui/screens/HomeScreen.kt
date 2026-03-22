@@ -19,7 +19,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Album
-import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Person
@@ -67,7 +66,8 @@ fun HomeScreen(
     onLikedSongsClick: () -> Unit,
     onSongsClick: () -> Unit,
     onAlbumsClick: () -> Unit,
-    onArtistsClick: () -> Unit
+    onArtistsClick: () -> Unit,
+    onPlaylistsClick: () -> Unit
 ) {
     var shelves by remember { mutableStateOf<List<HomeShelf>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
@@ -143,14 +143,7 @@ fun HomeScreen(
                             }
                             item {
                                 AssistChip(
-                                    onClick = { /* TODO: Handle Genres click */ },
-                                    label = { Text("Genres") },
-                                    leadingIcon = { Icon(Icons.Default.Category, null) }
-                                )
-                            }
-                            item {
-                                AssistChip(
-                                    onClick = { /* TODO: Handle Playlists click */ },
+                                    onClick = { onPlaylistsClick() },
                                     label = { Text("Playlists") },
                                     leadingIcon = { Icon(Icons.AutoMirrored.Filled.QueueMusic, null) }
                                 )

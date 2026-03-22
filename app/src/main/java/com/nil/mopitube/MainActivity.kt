@@ -8,7 +8,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nil.mopitube.navigation.AppNav
+import com.nil.mopitube.navigation.AppNavViewModel
 import com.nil.mopitube.theme.MopiTheme
 
 class MainActivity : ComponentActivity() {
@@ -21,8 +23,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         requestNotificationPermission()
         setContent {
-            MopiTheme {
-                AppNav()
+            val appNavViewModel: AppNavViewModel = viewModel()
+            MopiTheme(darkTheme = appNavViewModel.isDarkMode) {
+                AppNav(appNavViewModel = appNavViewModel)
             }
         }
     }

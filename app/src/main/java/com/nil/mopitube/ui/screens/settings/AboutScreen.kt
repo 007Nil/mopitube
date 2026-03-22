@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -53,13 +54,30 @@ fun AboutScreen() {
             textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(8.dp))
         Text(
             text = "No streaming subscriptions. No algorithms deciding what you hear. " +
                     "Just your music, your way.",
             style = MaterialTheme.typography.bodySmall,
             textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(32.dp))
+        HorizontalDivider()
+        Spacer(Modifier.height(24.dp))
+        Text(
+            text = "Developed by",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = "Sagnik Sarkar",
+            style = MaterialTheme.typography.bodyLarge
+        )
+        Text(
+            text = "Claude (Anthropic)",
+            style = MaterialTheme.typography.bodyLarge
         )
     }
 }

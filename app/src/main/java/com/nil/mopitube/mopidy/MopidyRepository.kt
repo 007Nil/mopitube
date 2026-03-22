@@ -396,6 +396,60 @@ class MopidyRepository(
         val result = rpc.call("core.playlists.as_list")
         return result?.jsonArray?.mapNotNull { it.jsonObject } ?: emptyList()
     }
+
+    suspend fun createPlaylist(name: String): JsonObject? {
+        val params = buildJsonObject { put("name", name) }
+        return rpc.call("core.playlists.create", params)?.jsonObject
+    }
+
+    suspend fun getPlaylist(uri: String): JsonObject? {
+        val params = buildJsonObject { put("uri", uri) }
+        return rpc.call("core.playlists.lookup", params)?.jsonObject
+    }
+
+    suspend fun removeTrackFromPlaylist(playlistUri: String, trackUri: String): Boolean {
+        val params = buildJsonObject { put("uri", playlistUri) }
+        val playlist = rpc.call("core.playlists.lookup", params)?.jsonObject ?: return false
+        val existingTracks = playlist["tracks"]?.jsonArray ?: return false
+        val updated = buildJsonObject {
+            put("__model__", "Playlist")
+            put("uri", playlistUri)
+            playlist["name"]?.let { put("name", it) }
+            put("tracks", buildJsonArray {
+                existingTracks.forEach { track ->
+                    val uri = track.jsonObject["uri"]?.jsonPrimitive?.contentOrNull
+                    if (uri != trackUri) add(track)
+                }
+            })
+        }
+        val saveParams = buildJsonObject { put("playlist", updated) }
+        return rpc.call("core.playlists.save", saveParams) != null
+    }
+
+    suspend fun deletePlaylist(uri: String): Boolean {
+        val params = buildJsonObject { put("uri", uri) }
+        return rpc.call("core.playlists.delete", params) != null
+    }
+
+    suspend fun addTrackToPlaylist(playlistUri: String, trackUri: String): Boolean {
+        val params = buildJsonObject { put("uri", playlistUri) }
+        val playlist = rpc.call("core.playlists.lookup", params)?.jsonObject ?: return false
+        val existingTracks = playlist["tracks"]?.jsonArray ?: buildJsonArray {}
+        val updated = buildJsonObject {
+            put("__model__", "Playlist")
+            put("uri", playlistUri)
+            playlist["name"]?.let { put("name", it) }
+            put("tracks", buildJsonArray {
+                existingTracks.forEach { add(it) }
+                add(buildJsonObject {
+                    put("__model__", "Track")
+                    put("uri", trackUri)
+                })
+            })
+        }
+        val saveParams = buildJsonObject { put("playlist", updated) }
+        return rpc.call("core.playlists.save", saveParams) != null
+    }
     suspend fun getRecentlyAddedAlbums(): List<JsonObject> {
         val result = rpc.call("core.library.browse", buildJsonObject { put("uri", JsonNull) })
         if (result == null || result !is JsonArray) return emptyList()

@@ -1,12 +1,15 @@
 package com.nil.mopitube.navigation
 
 import android.app.Application
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
 import com.nil.mopitube.App
+import com.nil.mopitube.data.UserPreferencesRepository
 import com.nil.mopitube.mopidy.MopidyClient
-import androidx.compose.runtime.getValue // <-- Added
-import androidx.compose.runtime.mutableStateOf // <-- Added
+import kotlinx.coroutines.launch
 
 /**
  * A ViewModel to manage the lifecycle of the MopidyClient.
@@ -17,14 +20,26 @@ import androidx.compose.runtime.mutableStateOf // <-- Added
  */
 class AppNavViewModel(application: Application) : AndroidViewModel(application) {
 
-    // The MopidyClient is now created once and managed by the ViewModel.
-    // It's exposed as a non-nullable property, simplifying the UI code.
     val client: MopidyClient = MopidyClient(application.applicationContext).also {
-        // Store reference in App for PlaybackService access
         App.mopidyClient = it
     }
     var hasNavigatedFromStartup by mutableStateOf(false)
     var pendingSeekMs by mutableStateOf(0)
+
+    var isDarkMode by mutableStateOf(false)
+        private set
+
+    private val prefsRepo = UserPreferencesRepository(application.applicationContext)
+
+    init {
+        viewModelScope.launch {
+            prefsRepo.darkMode.collect { isDarkMode = it }
+        }
+    }
+
+    fun toggleDarkMode() {
+        viewModelScope.launch { prefsRepo.saveDarkMode(!isDarkMode) }
+    }
     // The ViewModel will automatically be cleared when it's no longer needed (e.g., app is closed),
     // and its onCleared() method is the perfect place to shut down the client connection.
     override fun onCleared() {

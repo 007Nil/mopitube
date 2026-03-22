@@ -2,15 +2,21 @@ package com.nil.mopitube.ui.screens
 
 import android.util.Log
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -23,6 +29,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import com.nil.mopitube.mopidy.MopidyRepository
 import com.nil.mopitube.ui.components.AlbumListItem
 import kotlinx.coroutines.CoroutineScope
@@ -41,7 +48,17 @@ fun AlbumsScreen(
 ) {
     var albums by remember { mutableStateOf<List<JsonObject>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
+    var isSearchActive by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
+
+    val filteredAlbums = remember(albums, searchQuery) {
+        if (searchQuery.isBlank()) albums
+        else albums.filter { album ->
+            val name = album["name"]?.jsonPrimitive?.content ?: ""
+            name.contains(searchQuery, ignoreCase = true)
+        }
+    }
 
     fun loadAlbums(coroutineScope: CoroutineScope, forceRefresh: Boolean = false) {
         coroutineScope.launch {
@@ -61,6 +78,9 @@ fun AlbumsScreen(
             TopAppBar(
                 title = { Text("Albums") },
                 actions = {
+                    IconButton(onClick = { isSearchActive = !isSearchActive; if (!isSearchActive) searchQuery = "" }) {
+                        Icon(if (isSearchActive) Icons.Default.Close else Icons.Default.Search, contentDescription = "Search")
+                    }
                     IconButton(onClick = { loadAlbums(scope, forceRefresh = true) }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh")
                     }
@@ -77,19 +97,27 @@ fun AlbumsScreen(
                 Text("You have no albums in your library.")
             }
         } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = paddingValues
-            ) {
-                items(albums) { album ->
-                    val uri = album["uri"]?.jsonPrimitive?.content
-                    Log.d("AlbumsScreen", "The uri value is $uri")
-                    AlbumListItem(
-                        repo = repo,
-                        album = album,
-                        onClick = { uri?.let { onAlbumClick(it) } },
-                        onPlayAlbum = { uri?.let { onPlayAlbum(it) } }
+            Column(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
+                if (isSearchActive) {
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        placeholder = { Text("Search albums...") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
                     )
+                }
+                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    items(filteredAlbums) { album ->
+                        val uri = album["uri"]?.jsonPrimitive?.content
+                        Log.d("AlbumsScreen", "The uri value is $uri")
+                        AlbumListItem(
+                            repo = repo,
+                            album = album,
+                            onClick = { uri?.let { onAlbumClick(it) } },
+                            onPlayAlbum = { uri?.let { onPlayAlbum(it) } }
+                        )
+                    }
                 }
             }
         }

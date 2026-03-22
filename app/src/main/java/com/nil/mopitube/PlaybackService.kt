@@ -6,9 +6,16 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.graphics.Bitmap
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.os.IBinder
+import android.support.v4.media.MediaMetadataCompat
+import android.support.v4.media.session.MediaSessionCompat
+import android.support.v4.media.session.PlaybackStateCompat
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.media.session.MediaButtonReceiver
 import coil.ImageLoader
 import coil.request.ImageRequest
 import coil.request.SuccessResult
@@ -24,6 +31,16 @@ class PlaybackService : Service() {
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var notificationManager: NotificationManager? = null
+    private var mediaSession: MediaSessionCompat? = null
+    private var audioManager: AudioManager? = null
+    private var audioFocusRequest: AudioFocusRequest? = null
+
+    private var pollingJob: Job? = null
+    private var observerJob: Job? = null
+    private var updateJob: Job? = null
+
+    private var lastTrackUri: String? = null
+    private var lastPlaybackState: String? = null
 
     companion object {
         private const val NOTIFICATION_ID = 1
@@ -38,11 +55,68 @@ class PlaybackService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        Log.d(TAG, "Service created")
         notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        setupMediaSession()
     }
 
-    private fun buildBasicNotification(
+    private fun setupMediaSession() {
+        mediaSession = MediaSessionCompat(this, "MopiTube").apply {
+            setCallback(object : MediaSessionCompat.Callback() {
+                override fun onPlay() {
+                    scope.launch(Dispatchers.IO) { App.mopidyClient?.repo?.play() }
+                    requestAudioFocus()
+                }
+                override fun onPause() {
+                    scope.launch(Dispatchers.IO) { App.mopidyClient?.repo?.pause() }
+                    abandonAudioFocus()
+                }
+                override fun onSkipToNext() {
+                    scope.launch(Dispatchers.IO) { App.mopidyClient?.repo?.next() }
+                }
+                override fun onSkipToPrevious() {
+                    scope.launch(Dispatchers.IO) { App.mopidyClient?.repo?.previous() }
+                }
+                override fun onStop() {
+                    scope.launch(Dispatchers.IO) { App.mopidyClient?.repo?.pause() }
+                    abandonAudioFocus()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
+            })
+            // Route hardware media buttons through MediaButtonReceiver
+            setMediaButtonReceiver(
+                PendingIntent.getBroadcast(
+                    this@PlaybackService, 0,
+                    Intent(this@PlaybackService, MediaButtonReceiver::class.java)
+                        .apply { action = Intent.ACTION_MEDIA_BUTTON },
+                    PendingIntent.FLAG_IMMUTABLE
+                )
+            )
+            isActive = true
+        }
+    }
+
+    private fun requestAudioFocus() {
+        val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
+            .setWillPauseWhenDucked(false)
+            .build()
+        audioFocusRequest = req
+        audioManager?.requestAudioFocus(req)
+    }
+
+    private fun abandonAudioFocus() {
+        audioFocusRequest?.let { audioManager?.abandonAudioFocusRequest(it) }
+        audioFocusRequest = null
+    }
+
+    private fun buildNotification(
         trackName: String = "Loading...",
         artistName: String = "",
         albumName: String? = null,
@@ -50,175 +124,214 @@ class PlaybackService : Service() {
         artwork: Bitmap? = null
     ): Notification {
         val contentIntent = PendingIntent.getActivity(
-            this,
-            0,
+            this, 0,
             packageManager.getLaunchIntentForPackage(packageName),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
         val isPlaying = playbackState == "playing"
 
-        val playPauseIntent = PendingIntent.getService(
-            this,
-            0,
-            Intent(this, PlaybackService::class.java).apply {
-                action = if (isPlaying) ACTION_PAUSE else ACTION_PLAY
-            },
+        fun actionIntent(action: String, requestCode: Int) = PendingIntent.getService(
+            this, requestCode,
+            Intent(this, PlaybackService::class.java).apply { this.action = action },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        val previousIntent = PendingIntent.getService(
-            this,
-            1,
-            Intent(this, PlaybackService::class.java).apply { action = ACTION_PREVIOUS },
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        // Sync MediaSession state
+        mediaSession?.setPlaybackState(
+            PlaybackStateCompat.Builder()
+                .setActions(
+                    PlaybackStateCompat.ACTION_PLAY or
+                    PlaybackStateCompat.ACTION_PAUSE or
+                    PlaybackStateCompat.ACTION_PLAY_PAUSE or
+                    PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
+                    PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or
+                    PlaybackStateCompat.ACTION_STOP
+                )
+                .setState(
+                    if (isPlaying) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED,
+                    PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN,
+                    1.0f
+                )
+                .build()
         )
-
-        val nextIntent = PendingIntent.getService(
-            this,
-            2,
-            Intent(this, PlaybackService::class.java).apply { action = ACTION_NEXT },
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        mediaSession?.setMetadata(
+            MediaMetadataCompat.Builder()
+                .putString(MediaMetadataCompat.METADATA_KEY_TITLE, trackName)
+                .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, artistName)
+                .apply {
+                    albumName?.let { putString(MediaMetadataCompat.METADATA_KEY_ALBUM, it) }
+                    artwork?.let { putBitmap(MediaMetadataCompat.METADATA_KEY_ART, it) }
+                }
+                .build()
         )
-
-        val stopIntent = PendingIntent.getService(
-            this,
-            3,
-            Intent(this, PlaybackService::class.java).apply { action = ACTION_STOP },
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-
-        val playPauseIcon = if (isPlaying) {
-            android.R.drawable.ic_media_pause
-        } else {
-            android.R.drawable.ic_media_play
-        }
 
         return NotificationCompat.Builder(this, App.PLAYBACK_CHANNEL_ID)
             .setContentTitle(trackName)
             .setContentText(artistName)
             .setSubText(albumName)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_notification)
             .setLargeIcon(artwork)
             .setContentIntent(contentIntent)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setOngoing(isPlaying)
             .setShowWhen(false)
-            .addAction(android.R.drawable.ic_media_previous, "Previous", previousIntent)
-            .addAction(playPauseIcon, if (isPlaying) "Pause" else "Play", playPauseIntent)
-            .addAction(android.R.drawable.ic_media_next, "Next", nextIntent)
+            .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
+            .addAction(
+                NotificationCompat.Action(
+                    R.drawable.ic_notify_prev, "Previous",
+                    MediaButtonReceiver.buildMediaButtonPendingIntent(this, PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS)
+                )
+            )
+            .addAction(
+                NotificationCompat.Action(
+                    if (isPlaying) R.drawable.ic_notify_pause else R.drawable.ic_notify_play,
+                    if (isPlaying) "Pause" else "Play",
+                    MediaButtonReceiver.buildMediaButtonPendingIntent(
+                        this,
+                        if (isPlaying) PlaybackStateCompat.ACTION_PAUSE else PlaybackStateCompat.ACTION_PLAY
+                    )
+                )
+            )
+            .addAction(
+                NotificationCompat.Action(
+                    R.drawable.ic_notify_next, "Next",
+                    MediaButtonReceiver.buildMediaButtonPendingIntent(this, PlaybackStateCompat.ACTION_SKIP_TO_NEXT)
+                )
+            )
             .setStyle(
                 androidx.media.app.NotificationCompat.MediaStyle()
+                    .setMediaSession(mediaSession?.sessionToken)
                     .setShowActionsInCompactView(0, 1, 2)
             )
-            .setDeleteIntent(stopIntent)
+            .setDeleteIntent(actionIntent(ACTION_STOP, 3))
             .build()
     }
 
-    private fun startObservingPlayback() {
-        scope.launch {
-            val repo = App.mopidyClient?.repo
-            if (repo == null) {
-                Log.d(TAG, "repo is null, cannot observe playback")
-                return@launch
-            }
+    private fun startObserving() {
+        val repo = App.mopidyClient?.repo ?: run {
+            Log.w(TAG, "repo is null, cannot observe")
+            return
+        }
 
-            Log.d(TAG, "Starting playback observation")
-
-            // Fetch initial state immediately
-            val track = withContext(Dispatchers.IO) { repo.getCurrentTrack() }
-            val state = withContext(Dispatchers.IO) { repo.getPlaybackState() }
-
-            Log.d(TAG, "Initial state: track=${track?.get("name")}, state=$state")
-
-            // Update StateFlows
-            withContext(Dispatchers.IO) { repo.updatePlaybackState() }
-
-            // Update notification with real data
-            updateNotificationAsync(track, state)
-
-            // Observe ongoing changes
+        // --- StateFlow observers: react instantly to changes made by PlayerScreen or actions ---
+        observerJob?.cancel()
+        observerJob = scope.launch {
             launch {
-                repo.currentTrack.collectLatest { t ->
-                    Log.d(TAG, "Track changed: ${t?.get("name")}")
-                    updateNotificationAsync(t, repo.playbackState.value)
+                repo.currentTrack.collectLatest { track ->
+                    val state = repo.playbackState.value
+                    scheduleNotificationUpdate(track, state)
                 }
             }
-
             launch {
-                repo.playbackState.collectLatest { s ->
-                    Log.d(TAG, "State changed: $s")
-                    updateNotificationAsync(repo.currentTrack.value, s)
+                repo.playbackState.collectLatest { state ->
+                    scheduleNotificationUpdate(repo.currentTrack.value, state)
+                    // Manage audio focus based on playback state
+                    if (state == "playing") requestAudioFocus() else abandonAudioFocus()
+                }
+            }
+        }
+
+        // --- Polling loop: keeps notification accurate when app is backgrounded ---
+        // (PlayerScreen stops polling when the app is not in the foreground)
+        pollingJob?.cancel()
+        pollingJob = scope.launch {
+            // Seed initial state without waiting for a StateFlow update
+            val initialTrack = withContext(Dispatchers.IO) { repo.getCurrentTrack() }
+            val initialState = withContext(Dispatchers.IO) { repo.getPlaybackState() }
+            withContext(Dispatchers.Main) {
+                repo.updatePlaybackState() // push into StateFlows so observers fire
+            }
+            // If StateFlows were empty (app just started), update directly
+            if (repo.currentTrack.value == null) {
+                scheduleNotificationUpdate(initialTrack, initialState)
+            }
+
+            while (isActive) {
+                delay(2000) // Check every 2s — StateFlows handle the fast path
+                try {
+                    val track = withContext(Dispatchers.IO) { repo.getCurrentTrack() }
+                    val state = withContext(Dispatchers.IO) { repo.getPlaybackState() }
+                    val trackUri = track?.get("uri")?.jsonPrimitive?.contentOrNull
+                    if (trackUri != lastTrackUri || state != lastPlaybackState) {
+                        // Push into StateFlows so observers fire (and audio focus is managed)
+                        withContext(Dispatchers.Main) { repo.updatePlaybackState() }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Poll error", e)
                 }
             }
         }
     }
 
-    private fun updateNotificationAsync(track: JsonObject?, playbackState: String?) {
-        scope.launch {
+    private fun scheduleNotificationUpdate(track: JsonObject?, playbackState: String?) {
+        val trackUri = track?.get("uri")?.jsonPrimitive?.contentOrNull
+        // Deduplicate: skip if nothing changed
+        if (trackUri == lastTrackUri && playbackState == lastPlaybackState) return
+        lastTrackUri = trackUri
+        lastPlaybackState = playbackState
+
+        updateJob?.cancel()
+        updateJob = scope.launch {
             val trackName = track?.get("name")?.jsonPrimitive?.contentOrNull ?: "Unknown Track"
             val artistName = track?.get("artists")?.jsonArray?.firstOrNull()
                 ?.jsonObject?.get("name")?.jsonPrimitive?.contentOrNull ?: "Unknown Artist"
             val albumName = track?.get("album")?.jsonObject?.get("name")?.jsonPrimitive?.contentOrNull
-
             val artwork = track?.let { loadArtwork(it) }
-
-            val notification = buildBasicNotification(trackName, artistName, albumName, playbackState, artwork)
+            val notification = buildNotification(trackName, artistName, albumName, playbackState, artwork)
             notificationManager?.notify(NOTIFICATION_ID, notification)
         }
     }
 
-    private suspend fun loadArtwork(track: JsonObject): Bitmap? {
-        return withContext(Dispatchers.IO) {
-            try {
-                val artworkUrl = App.mopidyClient?.repo?.findArtwork(track)
-                if (artworkUrl != null) {
-                    val imageLoader = ImageLoader(this@PlaybackService)
-                    val request = ImageRequest.Builder(this@PlaybackService)
-                        .data(artworkUrl)
-                        .allowHardware(false)
-                        .build()
-                    val result = imageLoader.execute(request)
-                    (result as? SuccessResult)?.drawable?.let { drawable ->
-                        val bitmap = Bitmap.createBitmap(
-                            drawable.intrinsicWidth,
-                            drawable.intrinsicHeight,
-                            Bitmap.Config.ARGB_8888
-                        )
-                        val canvas = android.graphics.Canvas(bitmap)
-                        drawable.setBounds(0, 0, canvas.width, canvas.height)
-                        drawable.draw(canvas)
-                        bitmap
-                    }
-                } else {
-                    null
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to load artwork", e)
-                null
+    private suspend fun loadArtwork(track: JsonObject): Bitmap? = withContext(Dispatchers.IO) {
+        try {
+            val url = App.mopidyClient?.repo?.findArtwork(track) ?: return@withContext null
+            val loader = ImageLoader(this@PlaybackService)
+            val result = loader.execute(
+                ImageRequest.Builder(this@PlaybackService)
+                    .data(url)
+                    .allowHardware(false)
+                    .build()
+            )
+            (result as? SuccessResult)?.drawable?.let { d ->
+                val bmp = Bitmap.createBitmap(
+                    d.intrinsicWidth.coerceAtLeast(1),
+                    d.intrinsicHeight.coerceAtLeast(1),
+                    Bitmap.Config.ARGB_8888
+                )
+                val canvas = android.graphics.Canvas(bmp)
+                d.setBounds(0, 0, canvas.width, canvas.height)
+                d.draw(canvas)
+                bmp
             }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to load artwork", e)
+            null
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "onStartCommand action=${intent?.action}")
 
-        // CRITICAL: Call startForeground() immediately
-        val notification = buildBasicNotification()
-        startForeground(NOTIFICATION_ID, notification)
-        Log.d(TAG, "startForeground called")
+        // Always call startForeground() first — required within 5s of start
+        startForeground(NOTIFICATION_ID, buildNotification())
 
         when (intent?.action) {
-            null -> {
-                startObservingPlayback()
+            null -> startObserving()
+            ACTION_PLAY -> scope.launch(Dispatchers.IO) {
+                App.mopidyClient?.repo?.play()
+                requestAudioFocus()
             }
-            ACTION_PLAY -> scope.launch(Dispatchers.IO) { App.mopidyClient?.repo?.play() }
-            ACTION_PAUSE -> scope.launch(Dispatchers.IO) { App.mopidyClient?.repo?.pause() }
+            ACTION_PAUSE -> scope.launch(Dispatchers.IO) {
+                App.mopidyClient?.repo?.pause()
+                abandonAudioFocus()
+            }
             ACTION_NEXT -> scope.launch(Dispatchers.IO) { App.mopidyClient?.repo?.next() }
             ACTION_PREVIOUS -> scope.launch(Dispatchers.IO) { App.mopidyClient?.repo?.previous() }
             ACTION_STOP -> {
                 scope.launch(Dispatchers.IO) { App.mopidyClient?.repo?.pause() }
+                abandonAudioFocus()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
@@ -230,7 +343,8 @@ class PlaybackService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        Log.d(TAG, "Service destroyed")
+        abandonAudioFocus()
+        mediaSession?.release()
         scope.cancel()
     }
 }

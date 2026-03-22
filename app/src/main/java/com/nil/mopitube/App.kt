@@ -11,9 +11,10 @@ import com.nil.mopitube.mopidy.MopidyClient
 
 class App : Application(), ImageLoaderFactory {
     companion object {
-        const val PLAYBACK_CHANNEL_ID = "playback_channel"
+        // New channel ID — forces fresh creation, bypassing any stale OEM-muted channel
+        const val PLAYBACK_CHANNEL_ID = "playback_media_v2"
+        private const val LEGACY_CHANNEL_ID = "playback_channel"
 
-        // Global reference to MopidyClient for PlaybackService access
         @Volatile
         var mopidyClient: MopidyClient? = null
     }
@@ -25,6 +26,11 @@ class App : Application(), ImageLoaderFactory {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+
+            // Remove stale channel that ColorOS marked as unimportant
+            nm.deleteNotificationChannel(LEGACY_CHANNEL_ID)
+
             val channel = NotificationChannel(
                 PLAYBACK_CHANNEL_ID,
                 "Music Playback",
@@ -32,8 +38,10 @@ class App : Application(), ImageLoaderFactory {
             ).apply {
                 description = "Shows currently playing track"
                 setShowBadge(false)
+                setSound(null, null) // Explicitly no sound
+                enableVibration(false)
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
             }
-            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             nm.createNotificationChannel(channel)
         }
     }
