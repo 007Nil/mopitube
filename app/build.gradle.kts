@@ -18,8 +18,8 @@ android {
         applicationId = "com.nil.mopitube"
         minSdk = 26
         targetSdk = 36
-        versionCode = 5
-        versionName = "1.4"
+        versionCode = 6
+        versionName = "1.5"
     }
 
     buildFeatures {
