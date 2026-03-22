@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
@@ -33,6 +34,7 @@ fun AppDrawer(
         NavDrawerItem("home", "Home", Icons.Default.Home),
         NavDrawerItem("liked_songs", "Liked Songs", Icons.Default.Favorite),
         NavDrawerItem("disliked_songs", "Disliked Songs", Icons.Default.ThumbDown),
+        NavDrawerItem("listen_later", "Listen Later", Icons.Default.Bookmark),
         NavDrawerItem("settings", "Settings", Icons.Default.Settings)
     )
 

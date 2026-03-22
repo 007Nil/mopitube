@@ -12,6 +12,17 @@ data class ArtworkCacheEntry(
     val imageUrl: String
 )
 
+// --- Table: Listen Later ---
+@Entity(tableName = "listen_later")
+data class ListenLaterEntry(
+    @PrimaryKey val uri: String,
+    val title: String,
+    val artist: String?,
+    val albumUri: String?,
+    val positionMs: Int,
+    val savedAt: Long = System.currentTimeMillis()
+)
+
 // --- Table 2: Liked Tracks (Unchanged) ---
 @Entity(tableName = "liked_tracks")
 data class LikedTrack(
@@ -135,6 +146,19 @@ interface MopitubeDao {
 
     @Query("DELETE FROM play_history WHERE timestamp < :cutoffTimestamp")
     suspend fun deletePlayHistoryOlderThan(cutoffTimestamp: Long)
+
+    // --- Listen Later Methods ---
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun saveListenLater(entry: ListenLaterEntry)
+
+    @Query("SELECT * FROM listen_later ORDER BY savedAt DESC")
+    suspend fun getAllListenLater(): List<ListenLaterEntry>
+
+    @Query("SELECT * FROM listen_later WHERE uri = :uri LIMIT 1")
+    suspend fun getListenLaterByUri(uri: String): ListenLaterEntry?
+
+    @Query("DELETE FROM listen_later WHERE uri = :uri")
+    suspend fun deleteListenLater(uri: String)
 }
 
 // --- Database Definition (Updated) ---
@@ -145,8 +169,9 @@ interface MopitubeDao {
         LikedTrack::class,
         DislikedTrack::class,
         PlayHistoryEntry::class,
-        Track::class
-    ], version = 6)
+        Track::class,
+        ListenLaterEntry::class
+    ], version = 7)
 abstract class MopitubeDatabase : RoomDatabase() {
     abstract fun mopitubeDao(): MopitubeDao
 
@@ -189,6 +214,22 @@ abstract class MopitubeDatabase : RoomDatabase() {
             }
         }
 
+        // Migration from version 6 to 7: Add listen_later table
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS listen_later (
+                        uri TEXT NOT NULL PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        artist TEXT,
+                        albumUri TEXT,
+                        positionMs INTEGER NOT NULL,
+                        savedAt INTEGER NOT NULL
+                    )
+                """)
+            }
+        }
+
         // Migration from version 3 to 4: Add tracks table
         private val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -212,7 +253,7 @@ abstract class MopitubeDatabase : RoomDatabase() {
                     MopitubeDatabase::class.java,
                     "mopitube_app.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                     .fallbackToDestructiveMigration() // Only as last resort for unknown versions
                     .build()
                 INSTANCE = instance

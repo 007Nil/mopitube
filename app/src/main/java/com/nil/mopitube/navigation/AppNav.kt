@@ -157,6 +157,7 @@ fun AppNav(
                                 currentRoute == "server_settings" -> "Server Settings"
                                 currentRoute == "client_settings" -> "Client Settings"
                                 currentRoute == "about" -> "About"
+                                currentRoute == "listen_later" -> "Listen Later"
                                 currentRoute == "songs" -> "Songs"
                                 currentRoute == "albums" -> "Albums"
                                 currentRoute == "artists" -> "Artists"
@@ -260,6 +261,8 @@ fun AppNav(
                 composable("player") {
                     PlayerScreen(
                         client = client,
+                        pendingSeekMs = appNavViewModel.pendingSeekMs,
+                        onSeekConsumed = { appNavViewModel.pendingSeekMs = 0 },
                         onBack = { navController.navigateUp() })
                 }
 
@@ -375,6 +378,18 @@ fun AppNav(
                             repo = repo,
                             onTrackClick = onTrackClick,
                             onPlayerClick = onPlayerClick
+                        )
+                    }
+                }
+
+                composable("listen_later") {
+                    client.repo?.let { repo ->
+                        ListenLaterScreen(
+                            repo = repo,
+                            onResume = { uri, positionMs ->
+                                appNavViewModel.pendingSeekMs = positionMs
+                                onTrackClick(uri)
+                            }
                         )
                     }
                 }

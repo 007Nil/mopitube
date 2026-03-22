@@ -5,6 +5,7 @@ import android.util.Log
 import com.nil.mopitube.database.ArtworkCacheEntry
 import com.nil.mopitube.database.DislikedTrack
 import com.nil.mopitube.database.LikedTrack
+import com.nil.mopitube.database.ListenLaterEntry
 import com.nil.mopitube.database.MopitubeDatabase // Import the CORRECT database
 import com.nil.mopitube.database.PlayHistoryEntry
 import com.nil.mopitube.database.Track
@@ -746,6 +747,21 @@ class MopidyRepository(
         return true
     }
 
+    // --- Listen Later ---
 
+    suspend fun saveForLater(track: JsonObject, positionMs: Int) {
+        val uri = track["uri"]?.jsonPrimitive?.contentOrNull ?: return
+        val title = track["name"]?.jsonPrimitive?.contentOrNull ?: "Unknown"
+        val artist = track["artists"]?.jsonArray?.firstOrNull()
+            ?.jsonObject?.get("name")?.jsonPrimitive?.contentOrNull
+        val albumUri = track["album"]?.jsonObject?.get("uri")?.jsonPrimitive?.contentOrNull
+        dao.saveListenLater(ListenLaterEntry(uri, title, artist, albumUri, positionMs))
+    }
+
+    suspend fun getListenLaterTracks(): List<ListenLaterEntry> = dao.getAllListenLater()
+
+    suspend fun removeFromListenLater(uri: String) = dao.deleteListenLater(uri)
+
+    suspend fun isInListenLater(uri: String): Boolean = dao.getListenLaterByUri(uri) != null
 }
 
