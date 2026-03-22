@@ -475,7 +475,21 @@ fun PlayerScreen(
                     )
                 }
                 IconButton(onClick = { scope.launch { repo.previous() } }) { Icon(Icons.Filled.SkipPrevious, "Previous", modifier = Modifier.size(36.dp)) }
-                IconButton(onClick = { scope.launch { if (isPlaying) repo.pause() else repo.play() } }) { Icon(if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, "Play/Pause", modifier = Modifier.size(48.dp)) }
+                IconButton(onClick = {
+                    scope.launch {
+                        if (isPlaying) {
+                            repo.pause()
+                            // Auto-update Listen Later position on every pause
+                            val track = currentTrack
+                            val pos = positionMs ?: 0
+                            if (isInListenLater && track != null) {
+                                withContext(Dispatchers.IO) { repo.saveForLater(track, pos) }
+                            }
+                        } else {
+                            repo.play()
+                        }
+                    }
+                }) { Icon(if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, "Play/Pause", modifier = Modifier.size(48.dp)) }
                 IconButton(onClick = { scope.launch { repo.next() } }) { Icon(Icons.Filled.SkipNext, "Next", modifier = Modifier.size(36.dp)) }
                 IconButton(onClick = {
                     scope.launch {
