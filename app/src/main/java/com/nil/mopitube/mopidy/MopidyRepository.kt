@@ -242,7 +242,43 @@ class MopidyRepository(
         return allTracks
             .flatMap { it["artists"]?.jsonArray ?: emptyList() }
             .mapNotNull { it.jsonObject }
-            .distinctBy { it["uri"]?.jsonPrimitive?.content }
+            .distinctBy { it["name"]?.jsonPrimitive?.contentOrNull }
+            .sortedBy { it["name"]?.jsonPrimitive?.contentOrNull ?: "" }
+    }
+
+    suspend fun getAlbumsByArtist(artistName: String): List<JsonObject> {
+        val allTracks = getAllTracks()
+        return allTracks
+            .filter { track ->
+                track["artists"]?.jsonArray?.any {
+                    it.jsonObject["name"]?.jsonPrimitive?.contentOrNull == artistName
+                } == true
+            }
+            .mapNotNull { it["album"]?.jsonObject }
+            .distinctBy { it["uri"]?.jsonPrimitive?.contentOrNull }
+    }
+
+    suspend fun getTracksByArtistName(artistName: String): List<JsonObject> {
+        val allTracks = getAllTracks()
+        return allTracks.filter { track ->
+            track["artists"]?.jsonArray?.any {
+                it.jsonObject["name"]?.jsonPrimitive?.contentOrNull == artistName
+            } == true
+        }
+    }
+
+    suspend fun findArtistArtwork(artistName: String): String? {
+        val cacheKey = "artist-art|$artistName"
+        ArtworkProvider.get(cacheKey)?.let { return it }
+        dao.getArtwork(cacheKey)?.let {
+            ArtworkProvider.put(cacheKey, it.imageUrl)
+            return it.imageUrl
+        }
+        val urls = MusicBrainzClient().getArtistArtworkUrls(artistName)
+        val url = urls.firstOrNull() ?: return null
+        dao.insertArtwork(ArtworkCacheEntry(cacheKey = cacheKey, imageUrl = url))
+        ArtworkProvider.put(cacheKey, url)
+        return url
     }
 
     suspend fun clearTracklist() { rpc.call("core.tracklist.clear") }

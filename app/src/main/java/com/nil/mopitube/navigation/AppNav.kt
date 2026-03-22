@@ -163,6 +163,7 @@ fun AppNav(
                                 currentRoute == "artists" -> "Artists"
                                 currentRoute?.startsWith("playlist") == true -> "Playlist"
                                 currentRoute?.startsWith("album") == true -> "Album"
+                                currentRoute?.startsWith("artist") == true -> "Artist"
                                 else -> ""
                             }
                             Text(title)
@@ -414,8 +415,31 @@ fun AppNav(
                     client.repo?.let { repo ->
                         ArtistsScreen(
                             repo = repo,
-                            onArtistClick = { uri -> Log.d("AppNav", "Artist clicked: $uri. Navigation not implemented yet.") }
+                            onArtistClick = { name ->
+                                navController.navigate("artist/${URLEncoder.encode(name, "UTF-8")}")
+                            }
                         )
+                    }
+                }
+
+                composable(
+                    "artist/{artistName}",
+                    arguments = listOf(navArgument("artistName") { type = NavType.StringType })
+                ) { backStackEntry ->
+                    client.repo?.let { repo ->
+                        val name = backStackEntry.arguments?.getString("artistName")
+                            ?.let { URLDecoder.decode(it, "UTF-8") }
+                        if (name != null) {
+                            ArtistDetailScreen(
+                                repo = repo,
+                                artistName = name,
+                                onAlbumClick = { uri ->
+                                    navController.navigate("album/${URLEncoder.encode(uri, "UTF-8")}")
+                                },
+                                onPlayAlbum = onPlayAlbum,
+                                onTrackClick = onTrackClick
+                            )
+                        }
                     }
                 }
 
