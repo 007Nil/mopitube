@@ -31,4 +31,6 @@ google-services.json
 # Captures and logs
 captures/
 *.log
-```
+
+# VS Code
+.vscode/
