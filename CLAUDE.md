@@ -49,11 +49,11 @@ Compose Screens → AppNav (navigation) → AppNavViewModel → MopidyClient
 
 - **`navigation/`** — `AppNav.kt` is the root composable containing the full NavHost, bottom navigation (Home/Search/Liked Songs), drawer, scaffold, and all route definitions. `AppNavViewModel` owns the `MopidyClient` lifecycle and a `hasNavigatedFromStartup` flag. Routes are split into connection-independent (startup, settings, player) and connection-dependent (home, search, songs, albums, etc.) groups.
 
-- **`database/`** — Room database (version 4, destructive migration — no proper migrations). Entities: `Track`, `LikedTrack`, `PlayHistoryEntry`, `ArtworkCacheEntry`. Single DAO (`MopitubeDao`) with singleton pattern (`INSTANCE` volatile field).
+- **`database/`** — Room database (version 7, proper migrations v1→v7; `fallbackToDestructiveMigration()` only as last resort). Entities: `Track`, `LikedTrack`, `DislikedTrack`, `PlayHistoryEntry`, `ArtworkCacheEntry`, `ListenLaterEntry`. Single DAO (`MopitubeDao`) with singleton pattern (`INSTANCE` volatile field).
 
-- **`data/`** — `UserPreferencesRepository` uses DataStore for server host/port preferences (datastore name: `"settings"`).
+- **`data/`** — `UserPreferencesRepository` uses DataStore for server host/port preferences (datastore name: `"settings"`). `BackupRepository` handles JSON export/import of liked tracks, disliked tracks, play history, and listen-later entries via `ActivityResultContracts`.
 
-- **`ui/screens/`** — One composable per screen. Screens receive `MopidyRepository` directly (no per-screen ViewModels). Settings screens are in `ui/screens/settings/`.
+- **`ui/screens/`** — One composable per screen. Screens receive `MopidyRepository` directly (no per-screen ViewModels). Includes `DislikedSongsScreen` and `ListenLaterScreen` (resume playback from saved position). Settings screens are in `ui/screens/settings/`; `ClientSettingsScreen` handles library resync, artwork refresh, and backup/restore.
 
 - **`ui/components/`** — Reusable composables (track items, album cards, carousel, mini player, etc.).
 
@@ -89,18 +89,44 @@ Track click handling in `AppNav`: clears tracklist → adds selected track → f
 - `HomeScreen` uses `async` for concurrent data fetching.
 - `PlayerScreen` polls Mopidy tracklist state on 1-second intervals and auto-appends random tracks when the queue is running low.
 - `PlayerScreen` and `MiniPlayer` use `lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED)` to only poll when foregrounded.
+- `PlaybackService` uses `CoroutineScope(Dispatchers.Main + SupervisorJob())` and combines StateFlow observation (fast path) with a 2s polling loop (background path).
 
 ### Network Security
 
 Cleartext traffic is permitted for `192.168.1.50` and `archive.org` via `network_security_config.xml`.
 
-### Manifest Services
+### Utilities
 
-`PlaybackService` is declared with `foregroundServiceType="mediaPlayback"` and media session intent filters, but the implementation class does not yet exist — playback is currently managed entirely via Mopidy RPC calls from the UI layer. The app requests `INTERNET`, `FOREGROUND_SERVICE`, and `POST_NOTIFICATIONS` permissions.
+- `utils/FuzzySearch.kt` — client-side fuzzy matching used in `SearchScreen` to rank results.
+- `mopidy/ArtworkUploader.kt` — uploads artwork to the Mopidy server (separate from caching/fetching).
+
+### PlaybackService
+
+`PlaybackService` is a fully-implemented foreground service that:
+- Shows a persistent media notification with play/pause/next/previous controls.
+- Maintains a `MediaSessionCompat` for hardware media button handling (via `MediaButtonReceiver`).
+- Manages Android audio focus automatically based on playback state.
+- Observes `MopidyRepository.currentTrack` and `MopidyRepository.playbackState` StateFlows for instant UI updates, and also polls every 2s to stay accurate when the app is backgrounded (since `PlayerScreen` stops polling then).
+- Accesses the Mopidy client via `App.mopidyClient` — a global `@Volatile` singleton set by `AppNavViewModel`.
+
+`App` (Application subclass) creates the `PLAYBACK_CHANNEL_ID = "playback_media_v2"` notification channel and configures the global Coil `ImageLoader`. The app requests `INTERNET`, `FOREGROUND_SERVICE`, and `POST_NOTIFICATIONS` permissions.
 
 ## Known Legacy Code
 
 - `mopidy/ArtworkCache.kt` defines a separate `ArtworkDatabase` that is not actively used. Artwork caching is handled by `MopitubeDatabase`'s `ArtworkCacheEntry` entity instead.
+- The "Refresh Artwork" button in `ClientSettingsScreen` only shows a Toast — it does not actually clear or re-fetch the artwork cache.
+
+## Pending Work
+
+### AddToPlaylistDialog — "Create New Playlist" feature missing
+
+`ui/components/AddToPlaylistDialog.kt` was accidentally deleted and recreated without a previously-existing "create new playlist on the fly" feature. The feature needs to be re-implemented:
+
+- `MopidyRepository.createPlaylist(name: String): JsonObject?` already exists (calls `core.playlists.create`)
+- The dialog should show a "New Playlist" option (e.g. at the top of the list, with a `PlaylistAdd` icon)
+- Tapping it should show a text input (inline or a second dialog) to enter a playlist name
+- On confirm: call `repo.createPlaylist(name)`, then immediately call `repo.addTrackToPlaylist(uri, trackUri)` to add the current track
+- Show success/failure via the `onResult` callback (feeds into a `SnackbarHostState`)
 
 ## Dependencies
 
