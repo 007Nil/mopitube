@@ -83,10 +83,12 @@ fun PlayerScreen(
 
     val repo = client.repo
     if (repo == null) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("Error: Not connected")
-        }
-        // Early return to prevent the rest of the composable from running with a null repo.
+        val connectionState by client.connectionState.collectAsState()
+        ReconnectScreen(
+            client = client,
+            connectionState = connectionState,
+            onNavigateToServerSettings = onBack
+        )
         return
     }
     val scope = rememberCoroutineScope()
@@ -135,6 +137,8 @@ fun PlayerScreen(
                         context.imageLoader.diskCache?.remove(url)
                     }
                     withContext(Dispatchers.IO) { repo.setCachedArtwork(trackUri, albumUri, coverUrl) }
+                    // Invalidate the artworkCache entry so the queue monitoring loop re-fetches the new URL
+                    artworkCache = artworkCache.toMutableMap().also { it.remove(trackUri) }
                     artworkUrl = coverUrl
                     snackbarHostState.showSnackbar("Artwork updated!")
                 } else {
@@ -155,6 +159,7 @@ fun PlayerScreen(
     var isDisliked by remember { mutableStateOf(false) }
     var isInListenLater by remember { mutableStateOf(false) }
     var showPlaylistDialog by remember { mutableStateOf(false) }
+    var currentTrackPlaylistUri by remember { mutableStateOf<String?>(null) }
     var volume by remember { mutableStateOf(100) }
     var isVolumeSliderVisible by remember { mutableStateOf(false) }
     var repeatMode by remember { mutableStateOf(TrackRepeatMode.OFF) }
@@ -212,19 +217,12 @@ fun PlayerScreen(
                         queue = tracklistTracksWithTlid
                         tracklistLength = tracklistTracksWithTlid.size
 
-                        // Batch prefetch artwork for all unique albums
-                        val uniqueAlbumUris = tracklistTracksWithTlid
-                            .map { it.second } // Extract track objects
-                            .mapNotNull { it["album"]?.jsonObject?.get("uri")?.jsonPrimitive?.contentOrNull }
-                            .distinct()
-
+                        // Prefetch artwork for all tracks, keyed by trackUri.
+                        // This handles tracks with no album tag and avoids stale cache entries.
                         val newArtworkCache = mutableMapOf<String, String?>()
-                        uniqueAlbumUris.forEach { albumUri ->
-                            // Reuse existing cache or fetch new
-                            newArtworkCache[albumUri] = artworkCache[albumUri]
-                                ?: repo.findArtwork(tracklistTracksWithTlid.first {
-                                    it.second["album"]?.jsonObject?.get("uri")?.jsonPrimitive?.contentOrNull == albumUri
-                                }.second)
+                        tracklistTracksWithTlid.forEach { (_, track) ->
+                            val tUri = track["uri"]?.jsonPrimitive?.contentOrNull ?: return@forEach
+                            newArtworkCache[tUri] = artworkCache[tUri] ?: repo.findArtwork(track)
                         }
                         artworkCache = newArtworkCache
 
@@ -273,12 +271,13 @@ fun PlayerScreen(
         }
     }
 
-    // This effect fetches artwork, like, and dislike status when the track changes
+    // This effect fetches artwork, like, dislike, playlist status when the track changes
     LaunchedEffect(currentTrack, repo) {
         artworkUrl = null
         isLiked = false
         isDisliked = false
         isInListenLater = false
+        currentTrackPlaylistUri = null
         val track = currentTrack ?: return@LaunchedEffect
         val trackUri = track["uri"]?.jsonPrimitive?.contentOrNull
         if (!trackUri.isNullOrEmpty()) {
@@ -287,7 +286,16 @@ fun PlayerScreen(
                 isDisliked = repo.isTrackDisliked(trackUri)
                 isInListenLater = repo.isInListenLater(trackUri)
                 artworkUrl = repo.findArtwork(track)
+                currentTrackPlaylistUri = repo.findPlaylistContaining(trackUri)
             }
+        }
+    }
+
+    // Re-check playlist membership after the add-to-playlist dialog closes
+    LaunchedEffect(showPlaylistDialog) {
+        if (!showPlaylistDialog) {
+            val trackUri = currentTrack?.get("uri")?.jsonPrimitive?.contentOrNull ?: return@LaunchedEffect
+            currentTrackPlaylistUri = withContext(Dispatchers.IO) { repo.findPlaylistContaining(trackUri) }
         }
     }
 
@@ -594,13 +602,25 @@ fun PlayerScreen(
                     )
                     Text(if (isInListenLater) "Saved" else "Later")
                 }
-                OutlinedButton(onClick = { showPlaylistDialog = true }) {
+                OutlinedButton(onClick = {
+                    val inPlaylist = currentTrackPlaylistUri
+                    if (inPlaylist != null) {
+                        scope.launch {
+                            val trackUri = currentTrack?.get("uri")?.jsonPrimitive?.contentOrNull ?: return@launch
+                            val ok = withContext(Dispatchers.IO) { repo.removeTrackFromPlaylist(inPlaylist, trackUri) }
+                            currentTrackPlaylistUri = null
+                            snackbarHostState.showSnackbar(if (ok) "Removed from playlist" else "Failed to remove from playlist")
+                        }
+                    } else {
+                        showPlaylistDialog = true
+                    }
+                }) {
                     Icon(
-                        Icons.Outlined.PlaylistAdd,
-                        contentDescription = "Add to playlist",
+                        if (currentTrackPlaylistUri != null) Icons.Filled.PlaylistRemove else Icons.Outlined.PlaylistAdd,
+                        contentDescription = if (currentTrackPlaylistUri != null) "Remove from playlist" else "Add to playlist",
                         modifier = Modifier.padding(end = 4.dp)
                     )
-                    Text("Playlist")
+                    Text(if (currentTrackPlaylistUri != null) "- Playlist" else "Playlist")
                 }
             }
 
@@ -876,9 +896,8 @@ fun UpNextQueue(
                 val currentUri = currentTrack?.get("uri")?.jsonPrimitive?.contentOrNull
                 val isPlayingNow = trackUri == currentUri
 
-                // Get artwork from cache
-                val albumUri = track["album"]?.jsonObject?.get("uri")?.jsonPrimitive?.contentOrNull
-                val artwork = albumUri?.let { artworkCache[it] }
+                // Get artwork from cache (keyed by trackUri)
+                val artwork = trackUri?.let { artworkCache[it] }
 
                 UpNextQueueItem(
                     tlid = tlid,
