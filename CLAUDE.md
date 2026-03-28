@@ -116,18 +116,6 @@ Cleartext traffic is permitted for `192.168.1.50` and `archive.org` via `network
 - `mopidy/ArtworkCache.kt` defines a separate `ArtworkDatabase` that is not actively used. Artwork caching is handled by `MopitubeDatabase`'s `ArtworkCacheEntry` entity instead.
 - The "Refresh Artwork" button in `ClientSettingsScreen` only shows a Toast — it does not actually clear or re-fetch the artwork cache.
 
-## Pending Work
-
-### AddToPlaylistDialog — "Create New Playlist" feature missing
-
-`ui/components/AddToPlaylistDialog.kt` was accidentally deleted and recreated without a previously-existing "create new playlist on the fly" feature. The feature needs to be re-implemented:
-
-- `MopidyRepository.createPlaylist(name: String): JsonObject?` already exists (calls `core.playlists.create`)
-- The dialog should show a "New Playlist" option (e.g. at the top of the list, with a `PlaylistAdd` icon)
-- Tapping it should show a text input (inline or a second dialog) to enter a playlist name
-- On confirm: call `repo.createPlaylist(name)`, then immediately call `repo.addTrackToPlaylist(uri, trackUri)` to add the current track
-- Show success/failure via the `onResult` callback (feeds into a `SnackbarHostState`)
-
 ## Dependencies
 
 Managed in `app/build.gradle.kts` with a Compose BOM (`2024.10.00`). Key libraries: OkHttp3 4.12.0 (WebSocket), kotlinx-serialization 1.7.3 (JSON), Room 2.6.1 (database), Coil 2.6.0 (image loading), Navigation Compose 2.8.3, DataStore 1.1.1 (preferences). Annotation processing uses `kapt` (Room compiler). JVM target: 11.
