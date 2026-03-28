@@ -473,9 +473,10 @@ class MopidyRepository(
         val params = buildJsonObject { put("uri", "local:directory?type=track") }
         val browseResult = rpc.call("core.library.browse", params)
         if (browseResult == null || browseResult !is JsonArray) return emptyList()
-        val dislikedUris = dao.getAllDislikedTracks().map { it.uri }.toSet()
+        // Normalize both sides: browse URIs from Mopidy may be URL-encoded while stored URIs may not be
+        val dislikedUris = dao.getAllDislikedTracks().map { normalizeUri(it.uri) }.toSet()
         val allTrackRefs = browseResult.jsonArray.mapNotNull { it.jsonObject }
-            .filter { it["uri"]?.jsonPrimitive?.content !in dislikedUris }
+            .filter { normalizeUri(it["uri"]?.jsonPrimitive?.content ?: "") !in dislikedUris }
         if (allTrackRefs.isEmpty()) return emptyList()
         val randomTrackUris = allTrackRefs.shuffled().take(count).mapNotNull { it["uri"]?.jsonPrimitive?.content }
         if (randomTrackUris.isEmpty()) return emptyList()
@@ -718,8 +719,10 @@ class MopidyRepository(
 
     suspend fun playAlbum(albumUri: String) {
         val result = getAlbumSongs(albumUri)
+        val dislikedUris = dao.getAllDislikedTracks().map { normalizeUri(it.uri) }.toSet()
         val uris = result?.jsonArray
             ?.mapNotNull { it.jsonObject?.get("uri")?.jsonPrimitive?.contentOrNull }
+            ?.filter { normalizeUri(it) !in dislikedUris }
             ?: return
         if (uris.isEmpty()) return
         clearTracklist()
@@ -764,8 +767,11 @@ class MopidyRepository(
 
     suspend fun playAll(trackUris: List<String>) {
         if (trackUris.isEmpty()) return
+        val dislikedUris = dao.getAllDislikedTracks().map { normalizeUri(it.uri) }.toSet()
+        val filtered = trackUris.filter { normalizeUri(it) !in dislikedUris }
+        if (filtered.isEmpty()) return
         clearTracklist()
-        val params = buildJsonObject { put("uris", buildJsonArray { trackUris.forEach { add(JsonPrimitive(it)) } }) }
+        val params = buildJsonObject { put("uris", buildJsonArray { filtered.forEach { add(JsonPrimitive(it)) } }) }
         rpc.call("core.tracklist.add", params)
         play()
     }

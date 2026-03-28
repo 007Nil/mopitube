@@ -453,15 +453,7 @@ fun AppNav(
                                             } ?: emptyList()
                                         if (trackUris.isEmpty()) return@launch
 
-                                        withContext(Dispatchers.IO) {
-                                            repo.clearTracklist()
-                                            val urisArray = buildJsonArray {
-                                                trackUris.forEach { u -> add(JsonPrimitive(u)) }
-                                            }
-                                            val params = buildJsonObject { put("uris", urisArray) }
-                                            repo.rpc.call("core.tracklist.add", params)
-                                            repo.play()
-                                        }
+                                        withContext(Dispatchers.IO) { repo.playAll(trackUris) }
                                         client.playlistModeTrackCount = trackUris.size
                                         navController.navigate("player")
                                     } catch (e: Exception) {

@@ -282,8 +282,13 @@ fun PlayerScreen(
         val trackUri = track["uri"]?.jsonPrimitive?.contentOrNull
         if (!trackUri.isNullOrEmpty()) {
             withContext(Dispatchers.IO) {
-                isLiked = repo.isTrackLiked(trackUri)
                 isDisliked = repo.isTrackDisliked(trackUri)
+                // Safety net: if a disliked track somehow reaches the player, skip it immediately
+                if (isDisliked) {
+                    repo.next()
+                    return@withContext
+                }
+                isLiked = repo.isTrackLiked(trackUri)
                 isInListenLater = repo.isInListenLater(trackUri)
                 artworkUrl = repo.findArtwork(track)
                 currentTrackPlaylistUri = repo.findPlaylistContaining(trackUri)
@@ -522,6 +527,14 @@ fun PlayerScreen(
                             isDisliked = withContext(Dispatchers.IO) { repo.toggleDislike(trackUri) }
                             if (isDisliked) {
                                 isLiked = false
+                                // Remove ALL instances of this track from the tracklist so it
+                                // cannot play again (e.g. via repeat-all or future queue position)
+                                val tlidsToRemove = queue
+                                    .filter { it.second["uri"]?.jsonPrimitive?.contentOrNull == trackUri }
+                                    .map { it.first }
+                                withContext(Dispatchers.IO) {
+                                    tlidsToRemove.forEach { tlid -> repo.removeTrackFromTracklist(tlid) }
+                                }
                                 repo.next()
                             }
                         }
