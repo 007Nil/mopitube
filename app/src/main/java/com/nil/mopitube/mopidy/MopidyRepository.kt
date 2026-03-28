@@ -407,6 +407,20 @@ class MopidyRepository(
         return rpc.call("core.playlists.lookup", params)?.jsonObject
     }
 
+    /** Returns the URI of the first playlist containing [trackUri], or null if none. */
+    suspend fun findPlaylistContaining(trackUri: String): String? {
+        val playlists = getPlaylists()
+        for (playlist in playlists) {
+            val playlistUri = playlist["uri"]?.jsonPrimitive?.contentOrNull ?: continue
+            val detail = getPlaylist(playlistUri) ?: continue
+            val tracks = detail["tracks"]?.jsonArray ?: continue
+            if (tracks.any { it.jsonObject["uri"]?.jsonPrimitive?.contentOrNull == trackUri }) {
+                return playlistUri
+            }
+        }
+        return null
+    }
+
     suspend fun removeTrackFromPlaylist(playlistUri: String, trackUri: String): Boolean {
         val params = buildJsonObject { put("uri", playlistUri) }
         val playlist = rpc.call("core.playlists.lookup", params)?.jsonObject ?: return false
