@@ -689,6 +689,10 @@ class MopidyRepository(
         return dao.findDislikedTrack(trackUri) != null
     }
 
+    suspend fun getDislikedUris(): Set<String> {
+        return dao.getAllDislikedTracks().map { it.uri }.toSet()
+    }
+
     suspend fun toggleDislike(trackUri: String): Boolean {
         val isCurrentlyDisliked = isTrackDisliked(trackUri)
         if (isCurrentlyDisliked) {
@@ -767,11 +771,8 @@ class MopidyRepository(
 
     suspend fun playAll(trackUris: List<String>) {
         if (trackUris.isEmpty()) return
-        val dislikedUris = dao.getAllDislikedTracks().map { normalizeUri(it.uri) }.toSet()
-        val filtered = trackUris.filter { normalizeUri(it) !in dislikedUris }
-        if (filtered.isEmpty()) return
         clearTracklist()
-        val params = buildJsonObject { put("uris", buildJsonArray { filtered.forEach { add(JsonPrimitive(it)) } }) }
+        val params = buildJsonObject { put("uris", buildJsonArray { trackUris.forEach { add(JsonPrimitive(it)) } }) }
         rpc.call("core.tracklist.add", params)
         play()
     }
