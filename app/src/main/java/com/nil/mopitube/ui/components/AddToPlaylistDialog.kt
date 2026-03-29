@@ -83,11 +83,11 @@ fun AddToPlaylistDialog(
                             ListItem(
                                 headlineContent = { Text(name) },
                                 modifier = Modifier.clickable {
-                                    onDismiss()
                                     scope.launch {
                                         val ok = withContext(Dispatchers.IO) {
                                             repo.addTrackToPlaylist(uri, trackUri)
                                         }
+                                        onDismiss()
                                         onResult(if (ok) "Added to $name" else "Failed to add to $name")
                                     }
                                 }
