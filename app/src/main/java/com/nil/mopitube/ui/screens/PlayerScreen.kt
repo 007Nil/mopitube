@@ -527,14 +527,6 @@ fun PlayerScreen(
                             isDisliked = withContext(Dispatchers.IO) { repo.toggleDislike(trackUri) }
                             if (isDisliked) {
                                 isLiked = false
-                                // Remove ALL instances of this track from the tracklist so it
-                                // cannot play again (e.g. via repeat-all or future queue position)
-                                val tlidsToRemove = queue
-                                    .filter { it.second["uri"]?.jsonPrimitive?.contentOrNull == trackUri }
-                                    .map { it.first }
-                                withContext(Dispatchers.IO) {
-                                    tlidsToRemove.forEach { tlid -> repo.removeTrackFromTracklist(tlid) }
-                                }
                                 repo.next()
                             }
                         }
