@@ -527,15 +527,7 @@ fun PlayerScreen(
                             isDisliked = withContext(Dispatchers.IO) { repo.toggleDislike(trackUri) }
                             if (isDisliked) {
                                 isLiked = false
-                                // Skip first so Mopidy hands off cleanly, then remove future
-                                // occurrences so the track cannot play again (e.g. repeat-all)
                                 repo.next()
-                                val tlidsToRemove = queue
-                                    .filter { it.second["uri"]?.jsonPrimitive?.contentOrNull == trackUri }
-                                    .map { it.first }
-                                withContext(Dispatchers.IO) {
-                                    tlidsToRemove.forEach { tlid -> repo.removeTrackFromTracklist(tlid) }
-                                }
                             }
                         }
                     }

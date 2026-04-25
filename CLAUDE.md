@@ -61,6 +61,8 @@ Compose Screens → AppNav (navigation) → AppNavViewModel → MopidyClient
 
 `MopidyClient` exposes `rpc` and `repo` as nullable Compose `mutableStateOf` properties. They are `null` until `start()` is called and set back to `null` on `shutdown()`. UI code must null-check these before use — connection-dependent routes only render when `repo != null`.
 
+`AppNavViewModel` additionally publishes the live `MopidyClient` to `App.mopidyClient` (global `@Volatile` singleton) on `start()` and clears it on `shutdown()`. This is the handle `PlaybackService` reads — the service has no access to the Compose state, so the two surfaces (Compose `mutableStateOf` for UI, `App.mopidyClient` for the service) must stay in lockstep.
+
 ### JSON-RPC Serialization
 
 Mopidy responses are parsed dynamically using `kotlinx.serialization.json` types (`JsonObject`, `JsonArray`, `JsonElement`, `JsonPrimitive`). There are no typed data classes for RPC responses — all parsing is inline via extension properties like `.jsonObject`, `.jsonPrimitive?.content`. Requests are built with `buildJsonObject { }` / `buildJsonArray { }`.
