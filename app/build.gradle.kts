@@ -56,6 +56,13 @@ android {
         jvmTarget = "11"
         freeCompilerArgs = freeCompilerArgs.filterNot { it == "-Werror" }
     }
+
+    applicationVariants.all {
+        outputs.all {
+            (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl)
+                .outputFileName = "Mopitude.apk"
+        }
+    }
 }
 
 dependencies {
