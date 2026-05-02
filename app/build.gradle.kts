@@ -18,13 +18,22 @@ android {
         applicationId = "com.nil.mopitube"
         minSdk = 26
         targetSdk = 36
-        versionCode = 9
-        versionName = "1.9"
+        versionCode = 10
+        versionName = "2.0"
     }
 
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = file("../keystore/release.jks")
+            storePassword = findProperty("store.password") as String? ?: ""
+            keyAlias = "mopitube-key"
+            keyPassword = findProperty("key.password") as String? ?: ""
+        }
     }
 
     buildTypes {
@@ -34,6 +43,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 
